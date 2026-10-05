@@ -897,7 +897,7 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 					int found = 0;
 					if( i < nf ) { px=fp[i*3]; py=fp[i*3+1]; pz=fp[i*3+2]; }
 					else { px=cen[0]; py=cen[1]; pz=cen[2]; }
-					q[0]=px+0.2f*nx; q[1]=py+0.2f*ny; q[2]=pz+0.2f*nz;
+					q[0]=px+5.0f*nx; q[1]=py+5.0f*ny; q[2]=pz+5.0f*nz;
 					for( int b2 = 0; b2 < cnt && !found; b2++ )
 					{
 						if( b2 == k ) continue;
