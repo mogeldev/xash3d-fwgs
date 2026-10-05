@@ -49,6 +49,7 @@ void Test_RunDelta( void );
 void Test_RunBuffer( void );
 void Test_RunMunge( void );
 void Test_RunModBmodel( void );
+void Test_RunNightfire( void );
 void Test_RunTitles( void );
 void Test_RunConfig( void );
 
@@ -71,7 +72,8 @@ void Test_RunConfig( void );
 
 #define TEST_LIST_1 \
 	Test_RunImagelib(); \
-	Test_RunConfig();
+	Test_RunConfig(); \
+	Test_RunNightfire();
 
 #define TEST_LIST_1_CLIENT \
 	Test_RunVOX(); \

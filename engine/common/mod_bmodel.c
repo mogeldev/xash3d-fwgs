@@ -4900,6 +4900,77 @@ static void Test_Mod_FrameIndexCalculation( void )
 	TASSERT_EQi( Q_toupper( '9' ) - '0', 9 );
 }
 
+// Integration test: drive a real Nightfire BSP42 map through the engine's
+// brush-model loader (Mod_LoadBrushModel -> NFBSP_Convert42 -> BSP30 pipeline).
+// Only runs when a Nightfire map is present in the mounted game dir; otherwise
+// it is skipped so the test suite still passes without retail data.
+static void Test_NightfireWorldLoad( void )
+{
+	const char *envpath = getenv( "NF_TEST_MAP" );
+	fs_offset_t len = 0;
+	byte *buf = NULL;
+	FILE *fp;
+
+	// The engine's game-dir search path is not fully set up at this test stage,
+	// so load the map from an explicit path given by NF_TEST_MAP (skip if unset).
+	if( envpath && *envpath )
+	{
+		fp = fopen( envpath, "rb" );
+		if( fp )
+		{
+			len = 0;
+			fseek( fp, 0, SEEK_END );
+			len = (fs_offset_t)ftell( fp );
+			fseek( fp, 0, SEEK_SET );
+			if( len > 0 )
+			{
+				buf = (byte *)malloc( (size_t)len );
+				if( buf && fread( buf, 1, (size_t)len, fp ) != (size_t)len )
+				{
+					free( buf );
+					buf = NULL;
+				}
+			}
+			fclose( fp );
+		}
+	}
+
+	if( !buf )
+	{
+		Msg( "nfbsp: NF_TEST_MAP not set or unreadable, test skipped\n" );
+		return;
+	}
+
+	TASSERT( NFBSP_IsVersion42( buf, (size_t)len ));
+
+	// Run the engine's own BSP42 -> BSP30 converter and structurally check the
+	// result. (A full Mod_LoadBrushModel needs the renderer for texture loading,
+	// which is not up at this test stage, so we validate the converted lumps.)
+	{
+		size_t outsize = 0;
+		byte *b30 = NFBSP_Convert42( buf, len, &outsize );
+
+		TASSERT( b30 != NULL );
+		if( b30 )
+		{
+			dheader_t *h = (dheader_t *)b30;
+			TASSERT( outsize > sizeof( dheader_t ));
+			TASSERT_EQi( h->version, HLBSP_VERSION );
+			TASSERT( h->lumps[LUMP_NODES].filelen > 0 );
+			TASSERT( h->lumps[LUMP_FACES].filelen > 0 );
+			TASSERT( h->lumps[LUMP_MODELS].filelen > 0 );
+			TASSERT( h->lumps[LUMP_PLANES].filelen > 0 );
+			free( b30 );
+		}
+	}
+	free( buf );
+}
+
+void Test_RunNightfire( void )
+{
+	TRUN( Test_NightfireWorldLoad() );
+}
+
 void Test_RunModBmodel( void )
 {
 	TRUN( Test_Mod_NameImpliesTextureIsAnimated() );
