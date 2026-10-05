@@ -25,6 +25,7 @@ GNU General Public License for more details.
 #include "server.h"			// LUMP_ error codes
 #include "swaplib.h"
 #include "ref_common.h"
+#include "mod_nfbsp.h"		// James Bond 007: Nightfire BSP42 compatibility
 #if defined( HAVE_OPENMP )
 #include <omp.h>
 #endif // HAVE_OPENMP
@@ -2814,6 +2815,111 @@ done:
 #endif // !XASH_DEDICATED
 }
 
+#if !XASH_DEDICATED
+// True while a translated Nightfire BSP42 map is being loaded.
+static qboolean g_nfbsp_loading = false;
+static char    *g_nftex_table = NULL;
+static qboolean g_nftex_dirty = true;
+
+/*
+=================
+Mod_NightfireBuildTextureTable
+
+James Bond 007: Nightfire stores textures as PNGs inside assets.007 and refers
+to them by an extension-less path (e.g. "power/panel02") that is often longer
+than a BSP30 miptex name permits. The BSP42 translator records the full texture
+table as the "_nftex0", "_nftex1", ... worldspawn keys (split into short values
+to be safe for game-DLL parsers); concatenate them into one token list.
+=================
+*/
+static void Mod_NightfireBuildTextureTable( model_t *mod )
+{
+	size_t cap = 4096, len = 0;
+	char *buf = Mem_Malloc( mod->mempool, cap );
+	char key[24];
+
+	for( int n = 0; ; n++ )
+	{
+		const char *p, *e;
+		size_t keylen, vlen;
+
+		Q_snprintf( key, sizeof( key ), "\"_nftex%d\"", n );
+		keylen = Q_strlen( key );
+
+		p = strstr( mod->entities, key );
+		if( !p )
+			break;
+
+		p = strchr( p + keylen, '"' );	// opening quote of the value
+		if( !p )
+			break;
+		p++;
+		e = strchr( p, '"' );
+		if( !e )
+			break;
+
+		vlen = (size_t)( e - p );
+		if( len + vlen + 2 > cap )
+		{
+			cap = ( len + vlen + 2 ) * 2;
+			buf = Mem_Realloc( mod->mempool, buf, cap );
+		}
+		if( len ) buf[len++] = ' ';
+		memcpy( buf + len, p, vlen );
+		len += vlen;
+	}
+
+	buf[len] = '\0';
+	g_nftex_table = buf;	// owned by mod->mempool; no manual free across loads
+	g_nftex_dirty = false;
+}
+
+/*
+=================
+Mod_NightfireTexturePath
+
+Resolve a texture index to its Nightfire path.
+=================
+*/
+static const char *Mod_NightfireTexturePath( model_t *mod, int index )
+{
+	static char nfpath[MAX_VA_STRING];
+	const char *p;
+
+	if( index < 0 || mod->entities == NULL )
+		return NULL;
+
+	if( g_nftex_dirty || g_nftex_table == NULL )
+		Mod_NightfireBuildTextureTable( mod );
+
+	p = g_nftex_table;
+	for( int i = 0; ; i++ )
+	{
+		const char *start;
+
+		while( *p == ' ' )
+			p++;
+
+		if( *p == '\0' )
+			return NULL;	// ran off the end before reaching the index
+
+		start = p;
+		while( *p && *p != ' ' )
+			p++;
+
+		if( i == index )
+		{
+			size_t len = (size_t)( p - start );
+			if( len >= sizeof( nfpath ))
+				len = sizeof( nfpath ) - 1;
+			memcpy( nfpath, start, len );
+			nfpath[len] = '\0';
+			return nfpath;
+		}
+	}
+}
+#endif // !XASH_DEDICATED
+
 static void Mod_LoadTextureData( model_t *mod, dbspmodel_t *bmod, int textureIndex )
 {
 	uint32_t txFlags = 0;
@@ -2867,6 +2973,36 @@ static void Mod_LoadTextureData( model_t *mod, dbspmodel_t *bmod, int textureInd
 		}
 #endif // !XASH_DEDICATED
 	}
+
+#if !XASH_DEDICATED
+	// James Bond 007: Nightfire: textures live as PNGs inside assets.007.
+	// Resolve "textures/<path>.png" through the archive mount.
+	if( !texture->gl_texturenum && g_nfbsp_loading && mipTex.offsets[0] <= 0 && !Host_IsDedicated( ))
+	{
+		const char *nfpath = Mod_NightfireTexturePath( mod, textureIndex );
+
+		// "special/*" are clip/nodraw/bevel helper textures with no image
+		if( nfpath && Q_strncmp( nfpath, "special/", 8 ) != 0 )
+		{
+			char nftex[MAX_VA_STRING];
+
+			Q_snprintf( nftex, sizeof( nftex ), "textures/%s.png", nfpath );
+
+			if( FS_FileExists( nftex, false ))
+			{
+				texture->gl_texturenum = ref.dllFuncs.GL_LoadTexture( nftex, NULL, 0, txFlags );
+				load_external = texture->gl_texturenum != 0;
+
+				if( load_external )
+				{
+					// the placeholder miptex carries no dimensions
+					texture->width = REF_GET_PARM( PARM_TEX_WIDTH, texture->gl_texturenum );
+					texture->height = REF_GET_PARM( PARM_TEX_HEIGHT, texture->gl_texturenum );
+				}
+			}
+		}
+	}
+#endif // !XASH_DEDICATED
 
 	// Try WAD texture (force while r_wadtextures is 1)
 	if( !texture->gl_texturenum && (( r_wadtextures.value && world.wadcount > 0 ) || mipTex.offsets[0] <= 0 ))
@@ -4442,17 +4578,54 @@ Mod_LoadBrushModel
 void Mod_LoadBrushModel( model_t *mod, void *buffer, size_t buffersize, qboolean *loaded )
 {
 	char poolname[MAX_VA_STRING];
+	byte *nfbsp = NULL;
 
 	Q_snprintf( poolname, sizeof( poolname ), "^2%s^7", mod->name );
 
 	if( loaded ) *loaded = false;
+
+	// James Bond 007: Nightfire (PC) uses a heavily modified BSP (version 42).
+	// Translate it to BSP30 in memory so the rest of the engine can load it
+	// through the normal, well-tested brush-model pipeline.
+	if( NFBSP_IsVersion42( buffer, buffersize ))
+	{
+		size_t converted = 0;
+
+		nfbsp = NFBSP_Convert42( buffer, buffersize, &converted );
+
+		if( !nfbsp )
+		{
+			Con_Printf( S_ERROR "%s: unable to convert Nightfire BSP42 map\n", mod->name );
+			return;
+		}
+
+		Con_DPrintf( "%s: converted Nightfire BSP42 -> BSP30 (%zu -> %zu bytes)\n",
+			mod->name, buffersize, converted );
+		buffer = nfbsp;
+		buffersize = converted;
+#if !XASH_DEDICATED
+		g_nfbsp_loading = true;
+		g_nftex_dirty = true;
+#endif
+	}
 
 	mod->mempool = Mem_AllocPool( poolname );
 	mod->type = mod_brush;
 
 	// loading all the lumps into heap
 	if( !Mod_LoadBmodelLumps( mod, buffer, buffersize, world.loading ))
+	{
+#if !XASH_DEDICATED
+		g_nfbsp_loading = false;
+#endif
+		free( nfbsp );
 		return; // there were errors
+	}
+
+#if !XASH_DEDICATED
+	g_nfbsp_loading = false;
+#endif
+	free( nfbsp );	// the converted buffer is only needed during loading
 
 	if( world.loading ) worldmodel = mod;
 
