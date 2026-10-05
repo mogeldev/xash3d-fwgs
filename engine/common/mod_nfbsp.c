@@ -1496,6 +1496,135 @@ static int nfh_build_world( const unsigned char **L, int nleaves, int nbrushes,
 }
 #endif // NFBSP_WORLD_HULLS
 
+// ---- Nightfire face subdivision ------------------------------------------
+// Nightfire surfaces are large convex polygons whose texture-space extent can
+// reach ~1.4e5 texels. GoldSrc's lightmap atlas holds one block per face and is
+// bounded by the atlas page size, so such faces overflow it
+// (GL_CreateSurfaceLightmap: full). Split each face with planes of constant
+// s/t until its texture extent fits; the pieces share the surface's
+// plane/texinfo and resample from the same Nightfire lightmap.
+typedef struct {
+	float **ov; size_t *nov, *cov;
+	unsigned short **oe0, **oe1; size_t *noe, *n_edge_cap;
+	int **ose; size_t *nose, *cose;
+	outface_t **of; size_t *nof, *cof;
+	map_t *vmap;
+	const float *ts, *tt;		// texinfo s/t vecs (4 floats each)
+	int plane, ti_index, surface;
+	short side;
+	float limit;
+} nfs_face_ctx_t;
+
+static int nfs_vertex( nfs_face_ctx_t *c, float x, float y, float z )
+{
+	int qx = (int)lrintf( x * 100.0f );
+	int qy = (int)lrintf( y * 100.0f );
+	int qz = (int)lrintf( z * 100.0f );
+	unsigned char key[12];
+	int idx;
+
+	memcpy( key + 0, &qx, 4 );
+	memcpy( key + 4, &qy, 4 );
+	memcpy( key + 8, &qz, 4 );
+	if( !map_get_or_add( c->vmap, key, (int)( *c->nov / 3 ), &idx ))
+	{
+		if( *c->nov + 3 > *c->cov ) { *c->cov = *c->cov ? *c->cov * 2 : 8192; *c->ov = (float *)realloc( *c->ov, *c->cov * sizeof( float )); }
+		(*c->ov)[(*c->nov)++] = x; (*c->ov)[(*c->nov)++] = y; (*c->ov)[(*c->nov)++] = z;
+		idx = (int)( *c->nov / 3 ) - 1;
+	}
+	return idx;
+}
+
+static void nfs_emit_face( nfs_face_ctx_t *c, const int *poly, int n )
+{
+	int firstedge = (int)( *c->nose );
+	outface_t f;
+
+	for( int k = 0; k < n; k++ )
+	{
+		int a = poly[k], b = poly[( k + 1 ) % n];
+
+		if( *c->noe + 1 > *c->n_edge_cap ) { *c->n_edge_cap = *c->n_edge_cap ? *c->n_edge_cap * 2 : 16384; *c->oe0 = (unsigned short *)realloc( *c->oe0, *c->n_edge_cap * sizeof( unsigned short )); *c->oe1 = (unsigned short *)realloc( *c->oe1, *c->n_edge_cap * sizeof( unsigned short )); }
+		(*c->oe0)[*c->noe] = (unsigned short)a; (*c->oe1)[*c->noe] = (unsigned short)b; (*c->noe)++;
+
+		if( *c->nose + 1 > *c->cose ) { *c->cose = *c->cose ? *c->cose * 2 : 16384; *c->ose = (int *)realloc( *c->ose, *c->cose * sizeof( int )); }
+		(*c->ose)[(*c->nose)++] = (int)( *c->noe - 1 );
+	}
+
+	f.plane = c->plane; f.side = c->side; f.firstedge = firstedge;
+	f.numedges = n; f.texinfo = c->ti_index; f.lightofs = -1; f.surface = c->surface;
+
+	if( *c->nof + 1 > *c->cof ) { *c->cof = *c->cof ? *c->cof * 2 : 8192; *c->of = (outface_t *)realloc( *c->of, *c->cof * sizeof( outface_t )); }
+	(*c->of)[(*c->nof)++] = f;
+}
+
+static void nfs_split( nfs_face_ctx_t *c, const int *poly, int n, int depth )
+{
+	float umin = 1e30f, umax = -1e30f, vmin = 1e30f, vmax = -1e30f;
+	float du, dv, cval;
+	int by_u, nf = 0, nb = 0;
+	int front[260], back[260];
+
+	if( n < 3 ) return;
+
+	for( int k = 0; k < n; k++ )
+	{
+		const float *p = (*c->ov) + poly[k] * 3;
+		float u = c->ts[0]*p[0] + c->ts[1]*p[1] + c->ts[2]*p[2] + c->ts[3];
+		float v = c->tt[0]*p[0] + c->tt[1]*p[1] + c->tt[2]*p[2] + c->tt[3];
+
+		if( u < umin ) umin = u;
+		if( u > umax ) umax = u;
+		if( v < vmin ) vmin = v;
+		if( v > vmax ) vmax = v;
+	}
+	du = umax - umin;
+	dv = vmax - vmin;
+
+	if(( du <= c->limit && dv <= c->limit ) || depth >= 16 )
+	{
+		nfs_emit_face( c, poly, n );
+		return;
+	}
+
+	by_u = ( du >= dv );
+	cval = by_u ? ( umin + umax ) * 0.5f : ( vmin + vmax ) * 0.5f;
+
+	for( int k = 0; k < n; k++ )
+	{
+		int a = poly[k], b = poly[( k + 1 ) % n];
+		const float *pa = (*c->ov) + a * 3, *pb = (*c->ov) + b * 3;
+		float fa, fb;
+
+		if( by_u )
+		{
+			fa = c->ts[0]*pa[0] + c->ts[1]*pa[1] + c->ts[2]*pa[2] + c->ts[3] - cval;
+			fb = c->ts[0]*pb[0] + c->ts[1]*pb[1] + c->ts[2]*pb[2] + c->ts[3] - cval;
+		}
+		else
+		{
+			fa = c->tt[0]*pa[0] + c->tt[1]*pa[1] + c->tt[2]*pa[2] + c->tt[3] - cval;
+			fb = c->tt[0]*pb[0] + c->tt[1]*pb[1] + c->tt[2]*pb[2] + c->tt[3] - cval;
+		}
+
+		if( fa >= 0 ) front[nf++] = a;
+		if( fa < 0 ) back[nb++] = a;
+
+		if(( fa >= 0 ) != ( fb >= 0 ))
+		{
+			float w = fa / ( fa - fb );
+			int iv = nfs_vertex( c, pa[0] + ( pb[0] - pa[0] ) * w,
+				pa[1] + ( pb[1] - pa[1] ) * w, pa[2] + ( pb[2] - pa[2] ) * w );
+
+			front[nf++] = iv;
+			back[nb++] = iv;
+		}
+	}
+
+	if( nf >= 3 ) nfs_split( c, front, nf, depth + 1 );
+	if( nb >= 3 ) nfs_split( c, back, nb, depth + 1 );
+}
+
 byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 {
 	const unsigned char *in = (const unsigned char *)buffer;
@@ -1711,7 +1840,6 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 			const unsigned char *plp = L[1] + plane * 20;
 			float pnx = rd_f32( plp ), pny = rd_f32( plp + 4 ), pnz = rd_f32( plp + 8 );
 			short side;
-			int firstedge;
 
 			for( int k = 0; k < npoly; k++ )
 			{
@@ -1723,19 +1851,20 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 			}
 			side = ( nx * pnx + ny * pny + nz * pnz ) >= 0 ? 0 : 1;
 
-			firstedge = (int)nose;
-			for( int k = 0; k < npoly; k++ )
 			{
-				PUSH_SURFEDGE( (int)noe );
-				PUSH_EDGE( poly[k], poly[(k + 1) % npoly] );
-			}
+				nfs_face_ctx_t fc;
 
-			outface_t f;
-			f.plane = plane; f.side = side; f.firstedge = firstedge;
-			f.numedges = npoly; f.texinfo = ti_index; f.lightofs = -1;
-			f.surface = si;
-			PUSH_FACE( f );
-			surf_count[si] = 1;
+				fc.ov = &ov; fc.nov = &nov; fc.cov = &cov;
+				fc.oe0 = &oe0; fc.oe1 = &oe1; fc.noe = &noe; fc.n_edge_cap = &n_edge_cap;
+				fc.ose = &ose; fc.nose = &nose; fc.cose = &cose;
+				fc.of = &of; fc.nof = &nof; fc.cof = &cof;
+				fc.vmap = &vmap;
+				fc.ts = ti.s; fc.tt = ti.t;
+				fc.plane = plane; fc.ti_index = ti_index; fc.surface = si; fc.side = side;
+				fc.limit = 2000.0f;	// texels; keeps smax/tmax within a 128px atlas page
+				nfs_split( &fc, poly, npoly, 0 );
+			}
+			surf_count[si] = (int)( nof - (size_t)surf_first[si] );
 		}
 	}
 
@@ -2290,7 +2419,6 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	for( size_t i = 0; i < noe; i++ )
 	{
 		buf_u16( &lumps[12], oe0[i] ); buf_u16( &lumps[12], oe1[i] );
-		buf_i32( &lumps[12], 0 );
 	}
 	// surfedges
 	for( size_t i = 0; i < nose; i++ ) buf_i32( &lumps[13], ose[i] );
