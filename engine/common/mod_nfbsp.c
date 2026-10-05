@@ -241,6 +241,299 @@ typedef struct {
 	int headnode[4], visleafs, firstface, numfaces;
 } outmodel_t;
 
+// ---------------------------------------------------------------------------
+// Expanded world clip hulls: fragment-based solid BSP.
+// NOTE: correct but not compact enough to ship yet - without a qbsp/hlcsg-style
+// brush merge (interior-face removal) it over-splits badly (dm_power hull 1
+// alone needs >32000 clipnodes). Disabled by default; build with
+// -DNFBSP_WORLD_HULLS for experiments. See docs/world-clip-hull.md.
+// ---------------------------------------------------------------------------
+#ifdef NFBSP_WORLD_HULLS
+#define NFH_EPS      0.05f
+#define NFH_MAXV     256
+#define NFH_MAXCELL  128
+#define NFH_MAXDEPTH 256
+#define NFH_MAXFRAG  32768
+#define NFH_LIMIT    32000	// clipnodes the world hulls may consume
+
+typedef struct { float n[3], d; } nfh_plane_t;
+typedef struct { nfh_plane_t *pl; int n; } nfh_frag_t;
+
+typedef struct {
+	buf_t *clip;		// lumps[9] clipnodes
+	buf_t *plane;		// lumps[1] planes
+	float *vs;		// scratch vertices (NFH_MAXV * 3)
+	int   overflow;
+} nfh_ctx_t;
+
+static int nfh_verts( nfh_ctx_t *ctx, const nfh_plane_t *cell, int nc )
+{
+	int nv = 0;
+
+	if( nc > NFH_MAXCELL ) nc = NFH_MAXCELL;
+	for( int i = 0; i < nc; i++ )
+	for( int j = i + 1; j < nc; j++ )
+	for( int k = j + 1; k < nc; k++ )
+	{
+		const nfh_plane_t *a = &cell[i], *b = &cell[j], *c = &cell[k];
+		float det, v[3];
+		int ok = 1, dup = 0;
+
+		det = a->n[0] * ( b->n[1] * c->n[2] - b->n[2] * c->n[1] )
+		    - a->n[1] * ( b->n[0] * c->n[2] - b->n[2] * c->n[0] )
+		    + a->n[2] * ( b->n[0] * c->n[1] - b->n[1] * c->n[0] );
+		if( fabsf( det ) < 1e-9f ) continue;
+
+		v[0] = ( a->d * ( b->n[1] * c->n[2] - b->n[2] * c->n[1] )
+		       - a->n[1] * ( b->d * c->n[2] - b->n[2] * c->d )
+		       + a->n[2] * ( b->d * c->n[1] - b->n[1] * c->d ) ) / det;
+		v[1] = ( a->n[0] * ( b->d * c->n[2] - b->n[2] * c->d )
+		       - a->d * ( b->n[0] * c->n[2] - b->n[2] * c->n[0] )
+		       + a->n[2] * ( b->n[0] * c->d - b->d * c->n[0] ) ) / det;
+		v[2] = ( a->n[0] * ( b->n[1] * c->d - b->d * c->n[1] )
+		       - a->n[1] * ( b->n[0] * c->d - b->d * c->n[0] )
+		       + a->d * ( b->n[0] * c->n[1] - b->n[1] * c->n[0] ) ) / det;
+
+		for( int t = 0; t < nc; t++ )
+			if( cell[t].n[0] * v[0] + cell[t].n[1] * v[1] + cell[t].n[2] * v[2] - cell[t].d > NFH_EPS )
+			{ ok = 0; break; }
+		if( !ok ) continue;
+
+		for( int t = 0; t < nv; t++ )
+		{
+			float dx = v[0] - ctx->vs[t*3+0], dy = v[1] - ctx->vs[t*3+1], dz = v[2] - ctx->vs[t*3+2];
+			if( dx*dx + dy*dy + dz*dz < 1e-4f ) { dup = 1; break; }
+		}
+		if( dup ) continue;
+
+		if( nv >= NFH_MAXV ) break;
+		ctx->vs[nv*3+0] = v[0]; ctx->vs[nv*3+1] = v[1]; ctx->vs[nv*3+2] = v[2];
+		nv++;
+	}
+	return nv;
+}
+
+static int nfh_contains( const nfh_frag_t *f, const float *vs, int nv )
+{
+	for( int p = 0; p < f->n; p++ )
+		for( int v = 0; v < nv; v++ )
+			if( f->pl[p].n[0] * vs[v*3+0] + f->pl[p].n[1] * vs[v*3+1] +
+			    f->pl[p].n[2] * vs[v*3+2] - f->pl[p].d > NFH_EPS )
+				return 0;
+	return 1;
+}
+
+static int nfh_rec( nfh_ctx_t *ctx, nfh_plane_t *cell, int nc, nfh_frag_t *frags, int nfrag, int depth )
+{
+	int nv, bestf = -1, bestp = -1;
+	float bestscore = 1e30f;
+	nfh_plane_t active[NFH_MAXCELL], P;
+	int na = 0, cf, cb, idx, pidx;
+	size_t slot;
+	nfh_plane_t *front, *back;
+	nfh_frag_t *ff, *fb;
+	int nff = 0, nfb = 0;
+
+	if( ctx->overflow || depth > NFH_MAXDEPTH ) { ctx->overflow = 1; return -1; }
+	nv = nfh_verts( ctx, cell, nc );
+	if( nv <= 0 ) return -1;
+
+	for( int f = 0; f < nfrag; f++ )
+		if( nfh_contains( &frags[f], ctx->vs, nv ))
+			return -2;	// fully inside a brush
+
+	for( int f = 0; f < nfrag; f++ )
+		for( int p = 0; p < frags[f].n; p++ )
+		{
+			float nx = frags[f].pl[p].n[0], ny = frags[f].pl[p].n[1];
+			float nz = frags[f].pl[p].n[2], d = frags[f].pl[p].d;
+			float smin = 1e30f, smax = -1e30f, axial, imb, score;
+
+			for( int v = 0; v < nv; v++ )
+			{
+				float s = nx * ctx->vs[v*3+0] + ny * ctx->vs[v*3+1] + nz * ctx->vs[v*3+2] - d;
+				if( s < smin ) smin = s;
+				if( s > smax ) smax = s;
+			}
+			if( smin >= -NFH_EPS || smax <= NFH_EPS ) continue;
+			axial = ( fabsf( fabsf( nx ) - 1.0f ) < 1e-3f ||
+			          fabsf( fabsf( ny ) - 1.0f ) < 1e-3f ||
+			          fabsf( fabsf( nz ) - 1.0f ) < 1e-3f ) ? 0.0f : 1000.0f;
+			imb = fabsf( smin + smax ) / ( smax - smin > 1e-6f ? smax - smin : 1e-6f );
+			score = axial + imb;
+			if( score < bestscore ) { bestscore = score; bestf = f; bestp = p; }
+		}
+	if( bestf < 0 ) return -1;	// uniform empty
+
+	P = frags[bestf].pl[bestp];
+
+	// keep only the cell's active bounding planes
+	for( int c = 0; c < nc && na < NFH_MAXCELL; c++ )
+		for( int v = 0; v < nv; v++ )
+			if( fabsf( cell[c].n[0] * ctx->vs[v*3+0] + cell[c].n[1] * ctx->vs[v*3+1] +
+			    cell[c].n[2] * ctx->vs[v*3+2] - cell[c].d ) <= NFH_EPS )
+			{ active[na++] = cell[c]; break; }
+	if( na == 0 ) { na = nc; for( int c = 0; c < nc && c < NFH_MAXCELL; c++ ) active[c] = cell[c]; na = nc; }
+	if( na > NFH_MAXCELL - 1 ) na = NFH_MAXCELL - 1;
+
+	front = (nfh_plane_t *)malloc( sizeof( nfh_plane_t ) * ( na + 1 ));
+	back  = (nfh_plane_t *)malloc( sizeof( nfh_plane_t ) * ( na + 1 ));
+	ff = (nfh_frag_t *)malloc( sizeof( nfh_frag_t ) * ( nfrag ? nfrag : 1 ));
+	fb = (nfh_frag_t *)malloc( sizeof( nfh_frag_t ) * ( nfrag ? nfrag : 1 ));
+	if( !front || !back || !ff || !fb ) { ctx->overflow = 1; free( front ); free( back ); free( ff ); free( fb ); return -1; }
+	for( int c = 0; c < na; c++ ) { front[c] = active[c]; back[c] = active[c]; }
+	front[na].n[0] = -P.n[0]; front[na].n[1] = -P.n[1]; front[na].n[2] = -P.n[2]; front[na].d = -P.d;
+	back[na] = P;
+
+	for( int f = 0; f < nfrag; f++ )
+	{
+		nfh_plane_t *pf = (nfh_plane_t *)malloc( sizeof( nfh_plane_t ) * ( frags[f].n + 1 ));
+		nfh_plane_t *pb = (nfh_plane_t *)malloc( sizeof( nfh_plane_t ) * ( frags[f].n + 1 ));
+
+		if( !pf || !pb ) { ctx->overflow = 1; free( pf ); free( pb ); continue; }
+		memcpy( pf, frags[f].pl, sizeof( nfh_plane_t ) * frags[f].n );
+		pf[frags[f].n] = front[na];
+		if( nfrag < NFH_MAXFRAG && nfh_verts( ctx, pf, frags[f].n + 1 ) > 0 ) { ff[nff].pl = pf; ff[nff].n = frags[f].n + 1; nff++; }
+		else free( pf );
+
+		memcpy( pb, frags[f].pl, sizeof( nfh_plane_t ) * frags[f].n );
+		pb[frags[f].n] = back[na];
+		if( nfrag < NFH_MAXFRAG && nfh_verts( ctx, pb, frags[f].n + 1 ) > 0 ) { fb[nfb].pl = pb; fb[nfb].n = frags[f].n + 1; nfb++; }
+		else free( pb );
+	}
+	if( nff >= NFH_MAXFRAG || nfb >= NFH_MAXFRAG ) ctx->overflow = 1;
+
+	// pre-order clipnode slot
+	idx = (int)( ctx->clip->len / 8 );
+	slot = ctx->clip->len;
+	buf_i32( ctx->clip, 0 );
+	buf_i16( ctx->clip, 0 );
+	buf_i16( ctx->clip, 0 );
+
+	cf = nfh_rec( ctx, front, na + 1, ff, nff, depth + 1 );
+	cb = nfh_rec( ctx, back,  na + 1, fb, nfb, depth + 1 );
+
+	for( int f = 0; f < nff; f++ ) free( ff[f].pl );
+	for( int f = 0; f < nfb; f++ ) free( fb[f].pl );
+	free( ff ); free( fb ); free( front ); free( back );
+
+	if( ctx->overflow ) return -1;
+	if( (int)( ctx->clip->len / 8 ) >= NFH_LIMIT ) { ctx->overflow = 1; return -1; }
+
+	pidx = (int)( ctx->plane->len / 20 );
+	buf_f32( ctx->plane, P.n[0] ); buf_f32( ctx->plane, P.n[1] );
+	buf_f32( ctx->plane, P.n[2] ); buf_f32( ctx->plane, P.d );
+	buf_i32( ctx->plane, nf_plane_type( P.n[0], P.n[1], P.n[2] ));
+
+	memcpy( ctx->clip->d + slot + 0, &pidx, 4 );
+	{ short s0 = (short)cf, s1 = (short)cb; memcpy( ctx->clip->d + slot + 4, &s0, 2 ); memcpy( ctx->clip->d + slot + 6, &s1, 2 ); }
+	return idx;
+}
+
+// Build the world's hulls 1-3 into clips/planes. Returns 1 on success.
+static int nfh_build_world( const unsigned char **L, int nleaves, int nbrushes,
+	buf_t *clips, buf_t *planes, int headnode[4] )
+{
+	static const float hmins[4][3] = { {0,0,0}, {-16,-16,-36}, {-32,-32,-32}, {-16,-16,-18} };
+	static const float hmaxs[4][3] = { {0,0,0}, {16,16,36}, {32,32,32}, {16,16,18} };
+	int lindex = rd_i32( L[14] + 40 ), lcount = rd_i32( L[14] + 44 );
+	unsigned char *seen;
+	int *order, cnt = 0, ok = 1;
+	nfh_ctx_t ctx;
+
+	if( lindex < 0 || lcount <= 0 || nbrushes <= 0 ) return 0;
+	seen  = (unsigned char *)calloc( nbrushes, 1 );
+	order = (int *)malloc( sizeof( int ) * nbrushes );
+	if( !seen || !order ) { free( seen ); free( order ); return 0; }
+
+	for( int lk = 0; lk < lcount; lk++ )
+	{
+		int li = lindex + lk, lbi, lbc;
+		if( li < 0 || li >= nleaves ) continue;
+		lbi = rd_i32( L[11] + li * 48 + 40 );
+		lbc = rd_i32( L[11] + li * 48 + 44 );
+		if( lbi < 0 || lbc <= 0 ) continue;
+		for( int k = 0; k < lbc; k++ )
+		{
+			int bi = rd_i32( L[13] + ( lbi + k ) * 4 );
+			if( bi >= 0 && bi < nbrushes && !seen[bi] ) { seen[bi] = 1; order[cnt++] = bi; }
+		}
+	}
+	if( cnt == 0 ) { free( seen ); free( order ); return 0; }
+#ifdef NFBSP_STANDALONE
+	fprintf( stderr, "[nfh] world brushes=%d\n", cnt );
+#endif
+
+	ctx.clip = clips;
+	ctx.plane = planes;
+	ctx.vs = (float *)malloc( sizeof( float ) * NFH_MAXV * 3 );
+	if( !ctx.vs ) { free( seen ); free( order ); return 0; }
+
+	for( int hull = 1; hull <= 3 && ok; hull++ )
+	{
+		size_t base_clip = clips->len, base_plane = planes->len;
+		nfh_frag_t *frags = (nfh_frag_t *)malloc( sizeof( nfh_frag_t ) * cnt );
+		nfh_plane_t cell[6];
+		int idx;
+
+		if( !frags ) { ok = 0; break; }
+		for( int k = 0; k < cnt; k++ )
+		{
+			int bi = order[k];
+			int si = rd_i32( L[15] + bi * 12 + 4 );
+			int sc = rd_i32( L[15] + bi * 12 + 8 );
+			nfh_plane_t *pl = (nfh_plane_t *)malloc( sizeof( nfh_plane_t ) * ( sc > 0 ? sc : 1 ));
+			int n = 0;
+			for( int j = 0; j < sc; j++ )
+			{
+				int pi = rd_i32( L[16] + ( si + j ) * 8 + 4 );
+				float nx, ny, nz, d, sup;
+				if( pi < 0 ) continue;
+				nx = rd_f32( L[1] + pi * 20 + 0 );
+				ny = rd_f32( L[1] + pi * 20 + 4 );
+				nz = rd_f32( L[1] + pi * 20 + 8 );
+				d  = rd_f32( L[1] + pi * 20 + 12 );
+				sup = ( nx > 0 ? nx * hmaxs[hull][0] : nx * hmins[hull][0] )
+				    + ( ny > 0 ? ny * hmaxs[hull][1] : ny * hmins[hull][1] )
+				    + ( nz > 0 ? nz * hmaxs[hull][2] : nz * hmins[hull][2] );
+				pl[n].n[0] = nx; pl[n].n[1] = ny; pl[n].n[2] = nz; pl[n].d = d + sup; n++;
+			}
+			frags[k].pl = pl; frags[k].n = n;
+		}
+
+		cell[0].n[0] = -1; cell[0].n[1] = 0; cell[0].n[2] = 0; cell[0].d = -rd_f32( L[14] + 0 );
+		cell[1].n[0] =  1; cell[1].n[1] = 0; cell[1].n[2] = 0; cell[1].d =  rd_f32( L[14] + 12 );
+		cell[2].n[0] = 0; cell[2].n[1] = -1; cell[2].n[2] = 0; cell[2].d = -rd_f32( L[14] + 4 );
+		cell[3].n[0] = 0; cell[3].n[1] =  1; cell[3].n[2] = 0; cell[3].d =  rd_f32( L[14] + 16 );
+		cell[4].n[0] = 0; cell[4].n[1] = 0; cell[4].n[2] = -1; cell[4].d = -rd_f32( L[14] + 8 );
+		cell[5].n[0] = 0; cell[5].n[1] = 0; cell[5].n[2] =  1; cell[5].d =  rd_f32( L[14] + 20 );
+
+		ctx.overflow = 0;
+		idx = nfh_rec( &ctx, cell, 6, frags, cnt, 0 );
+#ifdef NFBSP_STANDALONE
+		fprintf( stderr, "[nfh] hull %d: idx=%d overflow=%d clips=%zu planes=%zu\n",
+			hull, idx, ctx.overflow, clips->len / 8, planes->len / 20 );
+#endif
+
+		for( int k = 0; k < cnt; k++ ) free( frags[k].pl );
+		free( frags );
+
+		if( ctx.overflow || idx < 0 )
+		{
+			clips->len = base_clip;
+			planes->len = base_plane;
+			ok = 0;
+			break;
+		}
+		headnode[hull] = idx;
+	}
+
+	free( ctx.vs );
+	free( seen ); free( order );
+	return ok;
+}
+#endif // NFBSP_WORLD_HULLS
+
 byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 {
 	const unsigned char *in = (const unsigned char *)buffer;
@@ -869,27 +1162,24 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	// lighting (resampled from the Nightfire per-surface lightmaps)
 	lumps[8] = lighting;
 	// clipnodes (hulls 1-3): Nightfire has no clipnode lump (its collision is
-	// surface-based), so synthesize a tree from the BSP nodes with leaf children
-	// replaced by their contents. The engine rebuilds hull0 from the nodes
-	// anyway, but hulls 1-3 need real clipnodes.
-	for( int i = 0; i < nnodes; i++ )
+	// surface-based). Build the world's three hulls as expanded solid BSPs over
+	// the world brushes (see nfh_build_world / docs/world-clip-hull.md); the
+	// previous render-tree copy was unexpanded and is no longer emitted.
 	{
-		int c[2] = { on[i].c0, on[i].c1 };
-		int out[2];
+#ifdef NFBSP_WORLD_HULLS
+		int nbrushes_w = llen[15] / 12;
 
-		for( int j = 0; j < 2; j++ )
+		if( !nfh_build_world( L, nleaves, nbrushes_w, &lumps[9], &lumps[1], om[0].headnode ))
 		{
-			if( c[j] < 0 )
-			{
-				int li = -c[j] - 1;
-				out[j] = ( li >= 0 && li < nleaves_out ) ? ol[li].contents : -1;
-			}
-			else out[j] = c[j];
+			om[0].headnode[1] = 0;
+			om[0].headnode[2] = 0;
+			om[0].headnode[3] = 0;
 		}
-
-		buf_i32( &lumps[9], on[i].planenum );
-		buf_i16( &lumps[9], (short)out[0] );
-		buf_i16( &lumps[9], (short)out[1] );
+#else
+		om[0].headnode[1] = 0;
+		om[0].headnode[2] = 0;
+		om[0].headnode[3] = 0;
+#endif
 	}
 
 	// Brush-model clip trees for hulls 1-3, expanded per hull. A model's solid
