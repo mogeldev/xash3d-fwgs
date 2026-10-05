@@ -256,7 +256,7 @@ typedef struct {
 #define NFH_MAXFRAG  32768
 #define NFH_LIMIT    32000	// clipnodes the world hulls may consume
 
-typedef struct { float n[3], d; } nfh_plane_t;
+typedef struct { float n[3], d; int interior; } nfh_plane_t;
 typedef struct { nfh_plane_t *pl; int n; } nfh_frag_t;
 
 typedef struct {
@@ -349,6 +349,7 @@ static int nfh_rec( nfh_ctx_t *ctx, nfh_plane_t *cell, int nc, nfh_frag_t *frags
 			float nz = frags[f].pl[p].n[2], d = frags[f].pl[p].d;
 			float smin = 1e30f, smax = -1e30f, axial, imb, score;
 
+			if( frags[f].pl[p].interior ) continue;	// inside the solid union
 			for( int v = 0; v < nv; v++ )
 			{
 				float s = nx * ctx->vs[v*3+0] + ny * ctx->vs[v*3+1] + nz * ctx->vs[v*3+2] - d;
@@ -363,7 +364,27 @@ static int nfh_rec( nfh_ctx_t *ctx, nfh_plane_t *cell, int nc, nfh_frag_t *frags
 			score = axial + imb;
 			if( score < bestscore ) { bestscore = score; bestf = f; bestp = p; }
 		}
-	if( bestf < 0 ) return -1;	// uniform empty
+	if( bestf < 0 )
+	{
+		// No solid-union boundary plane crosses the cell: the cell is uniformly
+		// inside or outside the union, so a single point test is exact.
+		float c[3] = { 0.0f, 0.0f, 0.0f };
+		for( int v = 0; v < nv; v++ )
+		{
+			c[0] += ctx->vs[v*3+0]; c[1] += ctx->vs[v*3+1]; c[2] += ctx->vs[v*3+2];
+		}
+		c[0] /= nv; c[1] /= nv; c[2] /= nv;
+		for( int f = 0; f < nfrag; f++ )
+		{
+			int inside = 1;
+			for( int p = 0; p < frags[f].n; p++ )
+				if( frags[f].pl[p].n[0] * c[0] + frags[f].pl[p].n[1] * c[1] +
+				    frags[f].pl[p].n[2] * c[2] - frags[f].pl[p].d > NFH_EPS )
+				{ inside = 0; break; }
+			if( inside ) return -2;
+		}
+		return -1;
+	}
 
 	P = frags[bestf].pl[bestp];
 
@@ -383,6 +404,7 @@ static int nfh_rec( nfh_ctx_t *ctx, nfh_plane_t *cell, int nc, nfh_frag_t *frags
 	if( !front || !back || !ff || !fb ) { ctx->overflow = 1; free( front ); free( back ); free( ff ); free( fb ); return -1; }
 	for( int c = 0; c < na; c++ ) { front[c] = active[c]; back[c] = active[c]; }
 	front[na].n[0] = -P.n[0]; front[na].n[1] = -P.n[1]; front[na].n[2] = -P.n[2]; front[na].d = -P.d;
+	front[na].interior = 0;
 	back[na] = P;
 
 	for( int f = 0; f < nfrag; f++ )
@@ -496,10 +518,96 @@ static int nfh_build_world( const unsigned char **L, int nleaves, int nbrushes,
 				sup = ( nx > 0 ? nx * hmaxs[hull][0] : nx * hmins[hull][0] )
 				    + ( ny > 0 ? ny * hmaxs[hull][1] : ny * hmins[hull][1] )
 				    + ( nz > 0 ? nz * hmaxs[hull][2] : nz * hmins[hull][2] );
-				pl[n].n[0] = nx; pl[n].n[1] = ny; pl[n].n[2] = nz; pl[n].d = d + sup; n++;
+				pl[n].n[0] = nx; pl[n].n[1] = ny; pl[n].n[2] = nz; pl[n].d = d + sup; pl[n].interior = 0; n++;
 			}
 			frags[k].pl = pl; frags[k].n = n;
 		}
+
+		// ---- mark interior faces (covered by another brush) ----
+		// A face is interior iff every probe (face vertices + centroid) offset
+		// slightly along the outward normal lies inside another brush. This is
+		// conservative: partial coverage keeps the face as a boundary.
+		{
+			int *fvc = (int *)malloc( sizeof( int ) * cnt );
+			float **fv = (float **)malloc( sizeof( float * ) * cnt );
+			float *flo = (float *)malloc( sizeof( float ) * cnt * 3 );
+			float *fhi = (float *)malloc( sizeof( float ) * cnt * 3 );
+
+			if( fvc && fv && flo && fhi )
+			{
+				for( int k = 0; k < cnt; k++ )
+				{
+					int nvk = nfh_verts( &ctx, frags[k].pl, frags[k].n );
+					int i;
+					fvc[k] = nvk > 0 ? nvk : 0;
+					fv[k] = (float *)malloc( sizeof( float ) * 3 * ( fvc[k] ? fvc[k] : 1 ));
+					for( i = 0; i < fvc[k]; i++ )
+					{
+						fv[k][i*3+0] = ctx.vs[i*3+0]; fv[k][i*3+1] = ctx.vs[i*3+1]; fv[k][i*3+2] = ctx.vs[i*3+2];
+					}
+					flo[k*3+0] = flo[k*3+1] = flo[k*3+2] = 1e30f;
+					fhi[k*3+0] = fhi[k*3+1] = fhi[k*3+2] = -1e30f;
+					for( i = 0; i < fvc[k]; i++ )
+						for( int t = 0; t < 3; t++ )
+						{
+							float val = fv[k][i*3+t];
+							if( val < flo[k*3+t] ) flo[k*3+t] = val;
+							if( val > fhi[k*3+t] ) fhi[k*3+t] = val;
+						}
+				}
+
+				for( int k = 0; k < cnt; k++ )
+				{
+					for( int p = 0; p < frags[k].n; p++ )
+					{
+						float nx = frags[k].pl[p].n[0], ny = frags[k].pl[p].n[1], nz = frags[k].pl[p].n[2], d = frags[k].pl[p].d;
+						float probes[40][3];
+						int np = 0, interior = 1;
+						for( int i = 0; i < fvc[k] && np < 32; i++ )
+							if( fabsf( nx * fv[k][i*3+0] + ny * fv[k][i*3+1] + nz * fv[k][i*3+2] - d ) <= NFH_EPS )
+							{
+								probes[np][0] = fv[k][i*3+0]; probes[np][1] = fv[k][i*3+1]; probes[np][2] = fv[k][i*3+2]; np++;
+							}
+						if( np < 3 ) continue;	// degenerate face
+						{	// centroid probe
+							float c[3] = { 0,0,0 };
+							for( int i = 0; i < np; i++ ) { c[0]+=probes[i][0]; c[1]+=probes[i][1]; c[2]+=probes[i][2]; }
+							c[0]/=np; c[1]/=np; c[2]/=np;
+							probes[np][0]=c[0]; probes[np][1]=c[1]; probes[np][2]=c[2]; np++;
+						}
+						for( int i = 0; i < np && interior; i++ )
+						{
+							float q[3] = { probes[i][0] + 0.2f*nx, probes[i][1] + 0.2f*ny, probes[i][2] + 0.2f*nz };
+							int found = 0;
+							for( int j = 0; j < cnt && !found; j++ )
+							{
+								if( j == k ) continue;
+								if( q[0] < flo[j*3+0]-0.1f || q[0] > fhi[j*3+0]+0.1f ||
+								    q[1] < flo[j*3+1]-0.1f || q[1] > fhi[j*3+1]+0.1f ||
+								    q[2] < flo[j*3+2]-0.1f || q[2] > fhi[j*3+2]+0.1f ) continue;
+								found = 1;
+								for( int t = 0; t < frags[j].n; t++ )
+									if( frags[j].pl[t].n[0]*q[0] + frags[j].pl[t].n[1]*q[1] +
+									    frags[j].pl[t].n[2]*q[2] - frags[j].pl[t].d > NFH_EPS )
+									{ found = 0; break; }
+							}
+							if( !found ) interior = 0;
+						}
+						frags[k].pl[p].interior = interior;
+					}
+				}
+				for( int k = 0; k < cnt; k++ ) free( fv[k] );
+			}
+			free( fvc ); free( fv ); free( flo ); free( fhi );
+		}
+#ifdef NFBSP_STANDALONE
+		{
+			int ti = 0, tt = 0;
+			for( int k = 0; k < cnt; k++ )
+				for( int p = 0; p < frags[k].n; p++ ) { tt++; if( frags[k].pl[p].interior ) ti++; }
+			fprintf( stderr, "[nfh] hull %d: interior faces %d / %d\n", hull, ti, tt );
+		}
+#endif
 
 		cell[0].n[0] = -1; cell[0].n[1] = 0; cell[0].n[2] = 0; cell[0].d = -rd_f32( L[14] + 0 );
 		cell[1].n[0] =  1; cell[1].n[1] = 0; cell[1].n[2] = 0; cell[1].d =  rd_f32( L[14] + 12 );
