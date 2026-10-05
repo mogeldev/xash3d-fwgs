@@ -1582,10 +1582,20 @@ static void R_DrawTextureChains( void )
 			continue;	// draw translucent water later
 		}
 
-		if( FBitSet( gp_host->features, ENGINE_QUAKE_COMPATIBLE ) && FBitSet( s->flags, SURF_TRANSPARENT ))
+		// Masked brush textures (GoldSrc '{' names, e.g. Nightfire's
+		// wld_masked/wld_glass materials) carry an alpha channel and must be
+		// alpha-tested. Route them through the alpha pass when they actually
+		// have alpha; doing it unconditionally would break GoldSrc, whose game
+		// libraries do not enable ENGINE_QUAKE_COMPATIBLE.
+		if( FBitSet( s->flags, SURF_TRANSPARENT ))
 		{
-			R_AddToSeparatePass( &draw_alpha_surfaces, i );
-			continue;	// draw transparent surfaces later
+			gl_texture_t *glt = t->gl_texturenum ? R_GetTexture( t->gl_texturenum ) : NULL;
+
+			if( FBitSet( gp_host->features, ENGINE_QUAKE_COMPATIBLE ) || ( glt && FBitSet( glt->flags, TF_HAS_ALPHA )))
+			{
+				R_AddToSeparatePass( &draw_alpha_surfaces, i );
+				continue;	// draw transparent surfaces later
+			}
 		}
 
 		for( ; s != NULL; s = s->texturechain )
