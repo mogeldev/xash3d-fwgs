@@ -50,6 +50,14 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize );
 #define BSP30_LUMPS 15
 #define HLBSP_VERSION 30
 
+// bsp30ext: an extra header (id "XASH", version 4) right after dheader_t turns
+// on 32-bit clipnodes. FWGS reads clipnodes from the standard header but uses
+// 12-byte dclipnode32_t entries once the count reaches MAX_MAP_CLIPNODES_HLBSP.
+#define NF_EXTRA_ID      (( 'X' << 0 ) | ( 'A' << 8 ) | ( 'S' << 16 ) | ( 'H' << 24 ))
+#define NF_EXTRA_VERSION 4
+#define NF_EXTRA_LUMPS   12
+#define NF_CLIP16_MAX    32767
+
 static int rd_i32( const unsigned char *p )
 {
 	return (int)((unsigned)p[0] | ((unsigned)p[1] << 8) |
@@ -254,7 +262,7 @@ typedef struct {
 #define NFH_MAXCELL  128
 #define NFH_MAXDEPTH 256
 #define NFH_MAXFRAG  32768
-#define NFH_LIMIT    32000	// clipnodes the world hulls may consume
+#define NFH_LIMIT    500000	// clipnodes the world hulls may consume (bsp30ext)
 
 typedef struct { float n[3], d; int interior; int id; } nfh_plane_t;
 typedef struct { nfh_plane_t *pl; int n; } nfh_frag_t;
@@ -734,25 +742,26 @@ static int nfw_rec( nfw_ctx_t *ctx, nfh_plane_t *cell, int nc, nfw_list_t *faces
 		fcell[na].n[0]=-P.n[0]; fcell[na].n[1]=-P.n[1]; fcell[na].n[2]=-P.n[2]; fcell[na].d=-P.d;
 		bcell[na] = P;
 
-		idx = (int)( ctx->base.clip->len / 8 );
+		idx = (int)( ctx->base.clip->len / 12 );
 		slot = ctx->base.clip->len;
 		buf_i32( ctx->base.clip, 0 );
-		buf_i16( ctx->base.clip, 0 );
-		buf_i16( ctx->base.clip, 0 );
+		buf_i32( ctx->base.clip, 0 );
+		buf_i32( ctx->base.clip, 0 );
 
 		cf = nfw_rec( ctx, fcell, na + 1, &front, depth + 1 );
 		cb = nfw_rec( ctx, bcell, na + 1, &back, depth + 1 );
 		free( fcell ); free( bcell );
 
 		if( ctx->base.overflow ) return -1;
-		if( (int)( ctx->base.clip->len / 8 ) >= NFH_LIMIT ) { ctx->base.overflow = 1; return -1; }
+		if( (int)( ctx->base.clip->len / 12 ) >= NFH_LIMIT ) { ctx->base.overflow = 1; return -1; }
 
 		pidx = (int)( ctx->base.plane->len / 20 );
 		buf_f32( ctx->base.plane, P.n[0] ); buf_f32( ctx->base.plane, P.n[1] );
 		buf_f32( ctx->base.plane, P.n[2] ); buf_f32( ctx->base.plane, P.d );
 		buf_i32( ctx->base.plane, nf_plane_type( P.n[0], P.n[1], P.n[2] ));
 		memcpy( ctx->base.clip->d + slot + 0, &pidx, 4 );
-		{ short s0 = (short)cf, s1 = (short)cb; memcpy( ctx->base.clip->d + slot + 4, &s0, 2 ); memcpy( ctx->base.clip->d + slot + 6, &s1, 2 ); }
+		memcpy( ctx->base.clip->d + slot + 4, &cf, 4 );
+		memcpy( ctx->base.clip->d + slot + 8, &cb, 4 );
 	}
 	return idx;
 }
@@ -811,7 +820,7 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 
 	// Clipnode 0 is the "use the render nodes" sentinel, so a real hull root must
 	// never be 0: reserve it with a dummy clipnode when the lump is empty.
-	if( clips->len == 0 ) { buf_i32( clips, 0 ); buf_i16( clips, 0 ); buf_i16( clips, 0 ); }
+	if( clips->len == 0 ) { buf_i32( clips, 0 ); buf_i32( clips, 0 ); buf_i32( clips, 0 ); }
 
 	for( int hull = 1; hull <= 3 && ok; hull++ )
 	{
@@ -928,7 +937,7 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 		idx = nfw_rec( &ctx, cell, 6, &faces, 0 );
 #ifdef NFBSP_STANDALONE
 		fprintf( stderr, "[nfw] hull %d: idx=%d overflow=%d clips=%zu planes=%zu depth=%d created=%d consumed=%d\n",
-			hull, idx, ctx.base.overflow, clips->len / 8, planes->len / 20, ctx.dbgmax, ctx.ncreated, ctx.nconsumed );
+			hull, idx, ctx.base.overflow, clips->len / 12, planes->len / 20, ctx.dbgmax, ctx.ncreated, ctx.nconsumed );
 #endif
 		nfw_free_list( &faces );
 		for( int k = 0; k < cnt; k++ ) free( ctx.br[k].pl );
@@ -1833,7 +1842,7 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 				int need = 0;
 				for( int k = 0; k < cnt; k++ )
 					need += 3 * rd_i32( L[15] + order[k] * 12 + 8 );
-				if( (int)( lumps[9].len / 8 ) + need > 32760 )
+				if( (int)( lumps[9].len / 12 ) + need > 500000 )
 				{
 					for( int k = 0; k < cnt; k++ ) seen[order[k]] = 0;
 					continue;
@@ -1872,16 +1881,16 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 						buf_f32( &lumps[1], nz ); buf_f32( &lumps[1], dd + sup );
 						buf_i32( &lumps[1], nf_plane_type( nx, ny, nz ));
 
-						idx = (int)( lumps[9].len / 8 );
+						idx = (int)( lumps[9].len / 12 );
 						buf_i32( &lumps[9], newpl );
-						buf_i16( &lumps[9], (short)rest );
-						buf_i16( &lumps[9], (short)back );
+						buf_i32( &lumps[9], rest );
+						buf_i32( &lumps[9], back );
 						back = idx;
 					}
 					rest = back;
 				}
 
-				om[mi].headnode[hull] = ( rest >= 0 && rest < 32768 ) ? rest : 0;
+				om[mi].headnode[hull] = ( rest >= 0 && rest < 524288 ) ? rest : 0;
 			}
 
 			for( int k = 0; k < cnt; k++ )
@@ -1924,14 +1933,42 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	}
 
 	// header
-	buf_i32( &out, HLBSP_VERSION );
-	size_t hdr = out.len;
-	for( int i = 0; i < BSP30_LUMPS; i++ ) { buf_i32( &out, 0 ); buf_i32( &out, 0 ); }
-	for( int i = 0; i < BSP30_LUMPS; i++ )
 	{
-		buf_patch_i32( &out, hdr + i * 8 + 0, (int)out.len );
-		buf_patch_i32( &out, hdr + i * 8 + 4, (int)lumps[i].len );
-		buf_bytes( &out, lumps[i].d, lumps[i].len );
+		int clip_count = (int)( lumps[9].len / 12 );
+		int clip_ext = ( clip_count > NF_CLIP16_MAX );
+
+		if( !clip_ext )
+		{
+			// downconvert the internal 12-byte clipnodes to classic 8-byte
+			buf_t c16 = { 0 };
+			for( int i = 0; i < clip_count; i++ )
+			{
+				const unsigned char *s = lumps[9].d + i * 12;
+				int pl = rd_i32( s ), c0 = rd_i32( s + 4 ), c1 = rd_i32( s + 8 );
+				buf_i32( &c16, pl );
+				buf_i16( &c16, (short)c0 );
+				buf_i16( &c16, (short)c1 );
+			}
+			free( lumps[9].d );
+			lumps[9] = c16;
+		}
+
+		buf_i32( &out, HLBSP_VERSION );
+		size_t hdr = out.len;
+		for( int i = 0; i < BSP30_LUMPS; i++ ) { buf_i32( &out, 0 ); buf_i32( &out, 0 ); }
+		if( clip_ext )
+		{
+			// bsp30ext marker right after dheader_t -> 32-bit clipnodes
+			buf_i32( &out, NF_EXTRA_ID );
+			buf_i32( &out, NF_EXTRA_VERSION );
+			for( int i = 0; i < NF_EXTRA_LUMPS; i++ ) { buf_i32( &out, 0 ); buf_i32( &out, 0 ); }
+		}
+		for( int i = 0; i < BSP30_LUMPS; i++ )
+		{
+			buf_patch_i32( &out, hdr + i * 8 + 0, (int)out.len );
+			buf_patch_i32( &out, hdr + i * 8 + 4, (int)lumps[i].len );
+			buf_bytes( &out, lumps[i].d, lumps[i].len );
+		}
 	}
 
 	// cleanup
