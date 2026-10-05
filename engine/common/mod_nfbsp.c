@@ -1872,9 +1872,9 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 		}
 	}
 
-	// ---- leaves + marksurfaces (world leaves only)
+	// ---- leaves + marksurfaces (world leaves only, plus one trailing dummy)
 	size_t cms_cap = 0;
-	ol = (outleaf_t *)malloc( sizeof( outleaf_t ) * ( nleaves_out ? nleaves_out : 1 ));
+	ol = (outleaf_t *)malloc( sizeof( outleaf_t ) * ( nleaves_out + 1 ));
 	for( int i = 0; i < nleaves_out; i++ )
 	{
 		const unsigned char *lp = L[11] + i * 48;
@@ -1904,6 +1904,17 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 		ol[i].firstms = first;
 		ol[i].numms = (int)nms - first;
 	}
+
+	// Trailing dummy leaf. Xash3D sets worldmodel->numleafs = visleafs and the
+	// GL renderer clears leafs[j+1] for j < numleafs, so the leafs lump must
+	// hold visleafs+1 entries. This leaf is never referenced by nodes (the
+	// nodes only reference the real world leaves).
+	ol[nleaves_out].contents = -1;
+	ol[nleaves_out].visofs = -1;
+	ol[nleaves_out].mins[0] = ol[nleaves_out].mins[1] = ol[nleaves_out].mins[2] = 0;
+	ol[nleaves_out].maxs[0] = ol[nleaves_out].maxs[1] = ol[nleaves_out].maxs[2] = 0;
+	ol[nleaves_out].firstms = 0;
+	ol[nleaves_out].numms = 0;
 
 	// ---- nodes
 	on = (outnode_t *)malloc( sizeof( outnode_t ) * ( nnodes ? nnodes : 1 ));
@@ -1935,7 +1946,9 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 		//               surfacesIndex, surfacesCount
 		int msi = rd_i32( mp + 48 );		// surfacesIndex
 		int msc = rd_i32( mp + 52 );		// surfacesCount
-		// world visleafs must equal the emitted leaf count (see above)
+		// World visleafs = emitted visible leaf count. The leafs lump carries one
+		// extra trailing leaf (see below) so Xash3D's renderer, which clears
+		// leafs[1..numleafs] with numleafs == visleafs, stays in bounds.
 		om[i].visleafs = ( i == 0 ) ? nleaves_out : rd_i32( mp + 44 );
 		if( msc > 0 && msi < nsurfaces )
 		{
@@ -2218,8 +2231,8 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 
 		free( seen ); free( order );
 	}
-	// leaves
-	for( int i = 0; i < nleaves_out; i++ )
+	// leaves (nleaves_out real + 1 trailing dummy)
+	for( int i = 0; i < nleaves_out + 1; i++ )
 	{
 		buf_i32( &lumps[10], ol[i].contents );
 		buf_i32( &lumps[10], ol[i].visofs );
