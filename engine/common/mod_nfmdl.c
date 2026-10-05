@@ -68,7 +68,8 @@ enum {
 	H_SEQ = 164, H_TEX = 180, H_SKINREF = 192, H_SKINFAM = 196, H_SKINS = 200,
 	H_BODYGRP = 204, H_ATTACH = 212,
 	H_VERTCOUNT = 252, H_TRICOUNT = 256, H_TRIMAP = 260,
-	H_VERTS = 264, H_NORMS = 268, H_TEXCO = 272, H_BLENDING = 284,
+	H_VERTS = 264, H_NORMS = 268, H_TEXCO = 272, H_BLENDSCALE = 280, H_BLENDING = 284,
+	H_BONEFIX = 288,
 	H_SIZE = 484
 };
 
@@ -169,10 +170,68 @@ static size_t nf_anim_block_len( const unsigned char *in, size_t size, int start
 
 // Emit the mesh array + tri commands + vertex/normal arrays for one submodel.
 // The mstudiomodel_t record is filled in-place.
+// Build one mstudioboneweight_t. Valid bones are packed into slots 0..k-1
+// (the renderer walks bone[0..count-1]) and weights are normalised to sum 255.
+static void nf_make_boneweight( const unsigned char *in, size_t size, int g,
+	int *gbone, int *gbone4, int scales_off, unsigned char w4[4], signed char b4[4] )
+{
+	int k = 0, sum = 0;
+
+	w4[0] = w4[1] = w4[2] = w4[3] = 0;
+	b4[0] = b4[1] = b4[2] = b4[3] = -1;
+
+	for( int s = 0; s < 4 && k < 4; s++ )
+	{
+		signed char bone = (signed char)gbone4[(size_t)g * 4 + s];
+		float sc = 0.0f;
+		int wi;
+
+		if( bone < 0 ) continue;
+		if( scales_off >= 0 && scales_off + (size_t)g * 16 + s * 4 + 4 <= size )
+			sc = rd_f32( in + scales_off + (size_t)g * 16 + s * 4 );
+		wi = (int)( sc * 255.0f + 0.5f );
+		if( wi < 0 ) wi = 0;
+		if( wi > 255 ) wi = 255;
+		b4[k] = bone;
+		w4[k] = (unsigned char)wi;
+		sum += wi;
+		k++;
+	}
+
+	if( k == 0 )
+	{
+		b4[0] = (signed char)gbone[g];
+		w4[0] = 255;
+		return;
+	}
+	if( sum <= 0 )
+	{
+		w4[0] = 255;
+		w4[1] = w4[2] = w4[3] = 0;
+		return;
+	}
+	if( sum != 255 )
+	{
+		int acc = 0, d, nv;
+
+		for( int s = 0; s < k; s++ )
+		{
+			int v = (int)( (float)w4[s] * 255.0f / (float)sum + 0.5f );
+			if( v < 0 ) v = 0; if( v > 255 ) v = 255;
+			w4[s] = (unsigned char)v; acc += v;
+		}
+		d = 255 - acc;
+		nv = (int)w4[0] + d;
+		if( nv < 0 ) nv = 0; if( nv > 255 ) nv = 255;
+		w4[0] = (unsigned char)nv;
+	}
+}
+
 static void emit_model_geometry( buf_t *out, const unsigned char *in, size_t size,
 	size_t modelrec, size_t mp_off,
 	int nverts_g, int ntris_g, int trimap_off, int verts_off, int norms_off,
-	int texco_off, int blends_off, int *gmap, int *gbone, int *local2g )
+	int texco_off, int blends_off, int scales_off, int use_weights,
+	int *gmap, int *gbone, int *gbone4, int *local2g )
 {
 	const unsigned char *mp = in + mp_off;
 
@@ -198,6 +257,14 @@ static void emit_model_geometry( buf_t *out, const unsigned char *in, size_t siz
 				signed char v0 = (signed char)in[blends_off + (size_t)gv * 4];
 				int bone = ( v0 >= 0 ) ? (signed char)mesh[v0] : 0;
 				gbone[gv] = ( bone < 0 ) ? 0 : bone;
+				if( use_weights )
+				{
+					for( int k = 0; k < 4; k++ )
+					{
+						signed char bk = (signed char)in[blends_off + (size_t)gv * 4 + k];
+						gbone4[(size_t)gv * 4 + k] = ( bk >= 0 ) ? (signed char)mesh[bk] : -1;
+					}
+				}
 			}
 		}
 	}
@@ -301,6 +368,29 @@ static void emit_model_geometry( buf_t *out, const unsigned char *in, size_t siz
 	buf_patch_i32( out, modelrec + 100, (int)out->len );
 	for( int l = 0; l < nextlocal; l++ )
 		for( int k = 0; k < 3; k++ ) buf_f32( out, rd_f32( in + norms_off + (size_t)local2g[l] * 16 + k * 4 ));
+
+	if( use_weights )
+	{
+		unsigned char w4[4]; signed char b4[4];
+
+		buf_align4( out );
+		buf_patch_i32( out, modelrec + 104, (int)out->len );
+		for( int l = 0; l < nextlocal; l++ )
+		{
+			nf_make_boneweight( in, size, local2g[l], gbone, gbone4, scales_off, w4, b4 );
+			buf_bytes( out, w4, 4 );
+			buf_bytes( out, b4, 4 );
+		}
+		buf_align4( out );
+		buf_patch_i32( out, modelrec + 108, (int)out->len );
+		for( int l = 0; l < nextlocal; l++ )
+		{
+			nf_make_boneweight( in, size, local2g[l], gbone, gbone4, scales_off, w4, b4 );
+			buf_bytes( out, w4, 4 );
+			buf_bytes( out, b4, 4 );
+		}
+	}
+
 	buf_align4( out );
 }
 
@@ -326,10 +416,21 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize )
 	const int norms_off  = rd_i32( in + H_NORMS );
 	const int texco_off  = rd_i32( in + H_TEXCO );
 	const int blends_off = rd_i32( in + H_BLENDING );
+	const int scales_off = rd_i32( in + H_BLENDSCALE );
+	const int bonefix_off = rd_i32( in + H_BONEFIX );
 
 	if( numbones < 0 || numbones > MAXSTUDIOBONES || nverts_g < 0 || nverts_g > MAXSTUDIOVERTS ||
 		ntris_g < 0 || nbody < 0 || numseq < 0 || numseq > 2048 || nbody > 4096 )
 		return NULL;
+
+	// Nightfire stores vertices in model space and provides BoneFixUp (the
+	// inverse bind pose = GoldSrc "poseToBone"). We therefore skin every model
+	// through the bone-weighted path with STUDIO_HAS_BONEINFO. Without a valid
+	// BoneFixUp array we cannot skin correctly and fall back to rigid (which is
+	// only correct if the vertices already are in bone space).
+	const int has_boneinfo = numbones > 0 && bonefix_off > 0 &&
+		(size_t)bonefix_off + (size_t)numbones * 48 <= size;
+	const int use_weights = has_boneinfo;
 
 	// total submodels (for the contiguous model array)
 	int total_models = 0;
@@ -357,6 +458,24 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize )
 		for( int k = 0; k < 6; k++ ) buf_i32( &out, rd_i32( bp + 40 + 4 * k ));
 		for( int k = 0; k < 6; k++ ) buf_f32( &out, rd_f32( bp + 64 + 4 * k ));
 		for( int k = 0; k < 6; k++ ) buf_f32( &out, rd_f32( bp + 88 + 4 * k ));
+	}
+
+	// ---- extended bone info (poseToBone), immediately after the bones array ----
+	// Nightfire vertices are model-space; BoneFixUp is the inverse bind pose
+	// that Xash expects as mstudioboneinfo_t.poseToBone.
+	if( has_boneinfo )
+	{
+		for( int i = 0; i < numbones; i++ )
+		{
+			const unsigned char *fp = in + bonefix_off + (size_t)i * 48;
+			buf_bytes( &out, fp, 48 );			// poseToBone[3][4]
+			buf_zero( &out, 16 );				// qAlignment
+			buf_i32( &out, 0 );				// proctype
+			buf_i32( &out, 0 );				// procindex
+			buf_f32( &out, 0.0f ); buf_f32( &out, 0.0f );
+			buf_f32( &out, 0.0f ); buf_f32( &out, 1.0f );	// quat (identity)
+			buf_zero( &out, 40 );				// reserved[10]
+		}
 	}
 
 	// ---- bone controllers ----
@@ -504,8 +623,9 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize )
 
 	int *gmap = (int *)malloc( (size_t)(nverts_g > 0 ? nverts_g : 1) * sizeof( int ));
 	int *gbone = (int *)malloc( (size_t)(nverts_g > 0 ? nverts_g : 1) * sizeof( int ));
+	int *gbone4 = (int *)malloc( (size_t)(nverts_g > 0 ? nverts_g : 1) * 4 * sizeof( int ));
 	int *local2g = (int *)malloc( (size_t)(nverts_g > 0 ? nverts_g : 1) * sizeof( int ));
-	if( !gmap || !gbone || !local2g ) { free( gmap ); free( gbone ); free( local2g ); free( out.d ); return NULL; }
+	if( !gmap || !gbone || !gbone4 || !local2g ) { free( gmap ); free( gbone ); free( gbone4 ); free( local2g ); free( out.d ); return NULL; }
 
 	int gidx = 0;
 	for( int bg = 0; bg < nbody; bg++ )
@@ -521,7 +641,7 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize )
 			if( mo + SZ_MODEL > size ) break;
 			emit_model_geometry( &out, in, size, models_base + (size_t)gidx * 112, mo,
 				nverts_g, ntris_g, trimap_off, verts_off, norms_off, texco_off, blends_off,
-				gmap, gbone, local2g );
+				scales_off, use_weights, gmap, gbone, gbone4, local2g );
 			gidx++;
 		}
 	}
@@ -563,7 +683,11 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize )
 	memcpy( out.d + 112, in + H_BBMIN, 12 );
 	memcpy( out.d + 124, in + H_BBMAX, 12 );
 #define PUT(off,val) buf_patch_i32( &out, (off), (int)(val) )
-	PUT( 136, 0 );
+	{
+		unsigned hf = 0;
+		if( has_boneinfo ) hf |= (1u << 30) | (1u << 31);	// BONEINFO | BONEWEIGHTS
+		PUT( 136, (int)hf );
+	}
 	PUT( 140, numbones ); PUT( 144, bone_off );
 	PUT( 148, numctl );   PUT( 152, ctl_off );
 	PUT( 156, numhit );   PUT( 160, hit_off );
@@ -579,7 +703,7 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize )
 	PUT( 236, 0 ); PUT( 240, 0 );
 #undef PUT
 
-	free( gmap ); free( gbone ); free( local2g );
+	free( gmap ); free( gbone ); free( gbone4 ); free( local2g );
 	free( seq_animidx_pos ); free( seq_animstart ); free( seq_blen );
 
 	*outsize = out.len;
