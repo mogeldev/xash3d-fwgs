@@ -125,6 +125,39 @@ static void buf_u16( buf_t *b, unsigned short v ) { buf_bytes( b, &v, 2 ); }
 
 static void buf_patch_i32( buf_t *b, size_t at, int v ) { memcpy( b->d + at, &v, 4 ); }
 
+// Reverse a contiguous block of 12-byte clipnodes [start,end) in place and
+// remap child references that point inside the block. Xash3D sets
+// hull->firstclipnode = headnode and rejects any child outside
+// [firstclipnode,lastclipnode], so a hull's root must sit at the lowest index;
+// our brush-union cascade otherwise emits the root last (highest index).
+static void nfh_reverse_clipblock( buf_t *clips, int start, int end )
+{
+	const int count = end - start;
+	unsigned char *base, *tmp;
+
+	if( count <= 1 ) return;
+
+	base = clips->d + (size_t)start * 12;
+	tmp = (unsigned char *)malloc( (size_t)count * 12 );
+	memcpy( tmp, base, (size_t)count * 12 );
+
+	for( int i = 0; i < count; i++ )
+	{
+		const int src = count - 1 - i;		// old relative index
+		int *c;
+
+		memcpy( base + (size_t)i * 12, tmp + (size_t)src * 12, 12 );
+
+		c = (int *)( base + (size_t)i * 12 + 4 );	// child0, child1
+		for( int t = 0; t < 2; t++ )
+		{
+			if( c[t] >= start && c[t] < end )
+				c[t] = start + ( count - 1 - ( c[t] - start ));
+		}
+	}
+	free( tmp );
+}
+
 // Zero-run-length coding identical to Xash3D's Mod_CompressPVS(): a zero byte
 // is followed by the count (1..255) of consecutive zero bytes; non-zero bytes
 // are copied verbatim.
@@ -2183,6 +2216,7 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 
 			for( int hull = 1; hull <= 3; hull++ )
 			{
+				int start = (int)( lumps[9].len / 12 );
 				int rest = -1;	// CONTENTS_EMPTY
 
 				for( int k = cnt - 1; k >= 0; k-- )
@@ -2222,7 +2256,15 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 					rest = back;
 				}
 
-				om[mi].headnode[hull] = ( rest >= 0 && rest < 524288 ) ? rest : 0;
+				// Our cascade emits the root last (highest index); Xash3D sets
+				// hull->firstclipnode = headnode and rejects children outside
+				// [firstclipnode,lastclipnode], so reverse the block to put the
+				// root at the lowest index.
+				{
+					int end = (int)( lumps[9].len / 12 );
+					nfh_reverse_clipblock( &lumps[9], start, end );
+					om[mi].headnode[hull] = ( end > start ) ? start : 0;
+				}
 			}
 
 			for( int k = 0; k < cnt; k++ )
