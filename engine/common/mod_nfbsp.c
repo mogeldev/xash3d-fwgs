@@ -697,7 +697,9 @@ static int nfw_rec( nfw_ctx_t *ctx, nfh_plane_t *cell, int nc, nfw_list_t *faces
 		nfw_face_t *f = faces->f[i];
 		float smin = 1e30f, smax = -1e30f;
 
-		if( bestid >= 0 && f->id == bestid ) { free( f->pts ); free( f ); ctx->nconsumed++; continue; }	// consumed by this node
+		if( bestid >= 0 && f->id == bestid &&
+		    ( f->n[0]*P.n[0]+f->n[1]*P.n[1]+f->n[2]*P.n[2] ) > 0.0f )
+		{ free( f->pts ); free( f ); ctx->nconsumed++; continue; }	// consumed by this node (same orientation)
 		for( int v = 0; v < f->npts; v++ )
 		{
 			float s = P.n[0]*f->pts[v*3]+P.n[1]*f->pts[v*3+1]+P.n[2]*f->pts[v*3+2]-P.d;
