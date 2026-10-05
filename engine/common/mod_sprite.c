@@ -65,9 +65,16 @@ static int NF_NightfireSpriteFrame( const char *name, int *w, int *h, unsigned c
 	}
 	else
 	{
-		// 8-bit indexed: expand through the image palette (alpha unavailable)
-		Image_SetPixelFormat();
-		Image_Copy8bitRGBA( img->buffer, out, pixels );
+		// 8-bit indexed (Nightfire SPZ frames are PNG, so this is a fallback):
+		// install a default palette, then expand. Image_SetPixelFormat() is
+		// declared in imagelib.h but not defined in this engine revision.
+		Image_GetPaletteQ1();
+		if( !Image_Copy8bitRGBA( img->buffer, out, pixels ))
+		{
+			FS_FreeImage( img );
+			free( out );
+			return 0;
+		}
 	}
 
 	FS_FreeImage( img );
