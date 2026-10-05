@@ -20,6 +20,7 @@ GNU General Public License for more details.
 #include "library.h"
 #include "ref_common.h"
 #include "swaplib.h"
+#include "mod_nfmdl.h"
 
 typedef int (*STUDIOAPI)( int, sv_blending_interface_t**, server_studio_api_t*,  float (*transform)[3][4], float (*bones)[MAXSTUDIOBONES][3][4] );
 
@@ -1128,16 +1129,41 @@ void Mod_LoadStudioModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 	char poolname[MAX_VA_STRING];
 	studiohdr_t	*phdr;
 	qboolean textures_loaded = false;
+	byte *nf_conv = NULL;
 
 	Q_snprintf( poolname, sizeof( poolname ), "^2%s^7", mod->name );
 
 	if( loaded ) *loaded = false;
+
+	// James Bond 007: Nightfire (PC) studio models are "MDLZ" v14. Translate
+	// them to GoldSrc MDL v10 in memory so the standard pipeline handles them.
+	if( NFMDL_IsVersion14( buffer, buffersize ))
+	{
+		size_t converted = 0;
+
+		nf_conv = NFMDL_Convert14( buffer, buffersize, &converted );
+
+		if( !nf_conv )
+		{
+			Con_Printf( S_ERROR "%s: unable to convert Nightfire MDLZ model\n", mod->name );
+			return;
+		}
+
+		Con_DPrintf( "%s: converted Nightfire MDLZ -> MDL v10 (%zu -> %zu bytes)\n",
+			mod->name, buffersize, converted );
+		buffer = nf_conv;
+		buffersize = converted;
+	}
+
 	mod->mempool = Mem_AllocPool( poolname );
 	mod->type = mod_studio;
 
 	phdr = R_StudioLoadHeader( mod, buffer, buffersize );
 	if( !phdr || phdr->length < sizeof( studiohdr_t )) // garbage value in length
+	{
+		free( nf_conv );
 		return;	// bad model
+	}
 
 #if !XASH_DEDICATED
 	if( !Host_IsDedicated( ) && phdr->numtextures == 0 )
@@ -1221,6 +1247,8 @@ void Mod_LoadStudioModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 	mod->numframes = Mod_StudioBodyVariations( mod );
 	mod->radius = RadiusFromBounds( mod->mins, mod->maxs );
 	mod->flags = phdr->flags; // copy header flags
+
+	free( nf_conv );	// converted buffer is no longer needed
 
 	if( loaded ) *loaded = true;
 }

@@ -3447,6 +3447,24 @@ static void R_StudioLoadTexture( model_t *mod, studiohdr_t *phdr, mstudiotexture
 		}
 	}
 
+	// James Bond 007: Nightfire (PC) model textures are external PNGs under
+	// models/textures/<name>.png, referenced by their bare name and emitted by
+	// mod_nfmdl.c with index == 0 (no embedded pixels).
+	if( !load_external && ptexture->index == 0 )
+	{
+		char nfpath[256];
+		int gl_texturenum;
+
+		Q_snprintf( nfpath, sizeof( nfpath ), "models/textures/%s.png", name );
+		gl_texturenum = GL_LoadTexture( nfpath, NULL, 0, flags );
+
+		if( gl_texturenum != 0 )
+		{
+			ptexture->index = gl_texturenum;
+			load_external = true;
+		}
+	}
+
 	if( !load_external )
 	{
 		// NOTE: replace index with pointer to start of imagebuffer, ImageLib expected it

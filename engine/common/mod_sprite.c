@@ -19,6 +19,61 @@ GNU General Public License for more details.
 #include "studio.h"
 #include "mod_local.h"
 #include "swaplib.h"
+#include "mod_nfspz.h"
+#include "imagelib.h"
+
+// Resolve a Nightfire sprite frame PNG (sprites/textures/<name>) into RGBA.
+// Used by the SPZ2 -> GoldSrc sprite conversion.
+static int NF_NightfireSpriteFrame( const char *name, int *w, int *h, unsigned char **rgba )
+{
+	char path[MAX_QPATH];
+	rgbdata_t *img;
+	byte *out;
+	int pixels, i;
+
+	Q_snprintf( path, sizeof( path ), "sprites/textures/%s", name );
+	img = FS_LoadImage( path, NULL, 0 );
+	if( !img || img->width <= 0 || img->height <= 0 )
+	{
+		if( img ) FS_FreeImage( img );
+		return 0;
+	}
+
+	*w = img->width;
+	*h = img->height;
+	pixels = img->width * img->height;
+	out = (byte *)malloc( (size_t)pixels * 4 );
+	if( !out )
+	{
+		FS_FreeImage( img );
+		return 0;
+	}
+
+	if( img->depth == 4 )
+	{
+		memcpy( out, img->buffer, (size_t)pixels * 4 );
+	}
+	else if( img->depth == 3 )
+	{
+		for( i = 0; i < pixels; i++ )
+		{
+			out[i * 4 + 0] = img->buffer[i * 3 + 0];
+			out[i * 4 + 1] = img->buffer[i * 3 + 1];
+			out[i * 4 + 2] = img->buffer[i * 3 + 2];
+			out[i * 4 + 3] = 255;
+		}
+	}
+	else
+	{
+		// 8-bit indexed: expand through the image palette (alpha unavailable)
+		Image_SetPixelFormat();
+		Image_Copy8bitRGBA( img->buffer, out, pixels );
+	}
+
+	FS_FreeImage( img );
+	*rgba = out;
+	return 1;
+}
 
 le_struct_begin( dsprite_q1_swap )
 	le_struct_field( dsprite_q1_t, ident )
@@ -213,14 +268,38 @@ load sprite model
 void Mod_LoadSpriteModel( model_t *mod, void *buffer, size_t buffersize, qboolean *loaded )
 {
 	msprite_t *psprite;
+	byte *nf_conv = NULL;
+	int nf_spz_flags = -1;
 
 	if( loaded )
 		*loaded = false;
+
+	// James Bond 007: Nightfire (PC) sprites ("SPZ2") are metadata that
+	// reference external PNG frames. Convert to a GoldSrc RGBA sprite.
+	if( NFSPZ_IsVersion2( buffer, buffersize ))
+	{
+		size_t converted = 0;
+
+		nf_spz_flags = ((byte *)buffer)[4];
+		nf_conv = NFSPZ_Convert2( buffer, buffersize, NF_NightfireSpriteFrame, &converted );
+
+		if( !nf_conv )
+		{
+			Con_Printf( S_ERROR "%s: unable to convert Nightfire SPZ2 sprite\n", mod->name );
+			return;
+		}
+
+		Con_DPrintf( "%s: converted Nightfire SPZ2 -> sprite (%zu -> %zu bytes)\n",
+			mod->name, buffersize, converted );
+		buffer = nf_conv;
+		buffersize = converted;
+	}
 
 	int version;
 	if( !Mod_SwapSprite( buffer, buffersize, &version ))
 	{
 		Con_DPrintf( S_ERROR "%s: %s is not a valid sprite\n", __func__, mod->name );
+		free( nf_conv );
 		return;
 	}
 
@@ -236,6 +315,7 @@ void Mod_LoadSpriteModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 		if( pinq1->numframes == 0 )
 		{
 			Con_DPrintf( S_ERROR "%s: %s has no frames\n", __func__, mod->name );
+			free( nf_conv );
 			return;
 		}
 
@@ -246,6 +326,15 @@ void Mod_LoadSpriteModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 
 		psprite->type = pinq1->type;
 		psprite->texFormat = SPR_ADDITIVE;
+
+		// Nightfire SPZ2 frames carry alpha; use a sensibly non-additive mode.
+		if( nf_conv )
+		{
+			if( nf_spz_flags == 2 ) psprite->texFormat = SPR_ADDITIVE;
+			else if( nf_spz_flags == 3 ) psprite->texFormat = SPR_ALPHTEST;
+			else psprite->texFormat = SPR_NORMAL;
+		}
+
 		psprite->numframes = mod->numframes = pinq1->numframes;
 		psprite->facecull = SPR_CULL_FRONT;
 		float radius = floorf( pinq1->boundingradius );
@@ -273,6 +362,7 @@ void Mod_LoadSpriteModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 		if( pinhl->numframes == 0 )
 		{
 			Con_DPrintf( S_WARN "%s: %s has no frames\n", __func__, mod->name );
+			free( nf_conv );
 			return;
 		}
 
@@ -301,12 +391,15 @@ void Mod_LoadSpriteModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 	{
 		// skip frames loading
 		psprite->numframes = 0;
+		free( nf_conv );
 		return;
 	}
 
 #if !XASH_DEDICATED
 	Mod_SpriteLoadTextures( mod, buffer );
 #endif
+
+	free( nf_conv );
 }
 
 #if XASH_LLVM_LIBFUZZER

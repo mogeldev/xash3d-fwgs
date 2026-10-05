@@ -23,6 +23,12 @@ GNU General Public License for more details.
 #include "enginefeatures.h"
 #include "client.h"
 #include "server.h"
+#include "mod_nfmdl.h"
+#include "mod_nfspz.h"
+
+// Nightfire container magics (little-endian), see mod_nfmdl.c / mod_nfspz.c.
+#define IDNFMDLHEADER (('Z'<<24)+('L'<<16)+('D'<<8)+'M')	// "MDLZ"
+#define IDNFSPRHEADER (('2'<<24)+('Z'<<16)+('P'<<8)+'S')	// "SPZ2"
 
 static model_info_t	mod_crcinfo[MAX_MODELS];
 static model_t	mod_known[MAX_MODELS];
@@ -341,9 +347,16 @@ static model_t *Mod_LoadModel( model_t *mod, qboolean crash )
 	mod->needload = NL_PRESENT;
 	mod->type = mod_bad;
 
-	// call the apropriate loader
+	// Nightfire models use their own container magics but are converted to the
+	// GoldSrc formats by the loaders below before parsing.
 	switch( *(uint *)buf )
 	{
+	case LittleLong( IDNFMDLHEADER ):	// "MDLZ" (Nightfire studio model)
+		Mod_LoadStudioModel( mod, buf, length, &loaded );
+		break;
+	case LittleLong( IDNFSPRHEADER ):	// "SPZ2" (Nightfire sprite)
+		Mod_LoadSpriteModel( mod, buf, length, &loaded );
+		break;
 	case LittleLong( IDSTUDIOHEADER ):
 		Mod_LoadStudioModel( mod, buf, length, &loaded );
 		break;
