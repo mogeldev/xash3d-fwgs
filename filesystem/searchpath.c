@@ -66,6 +66,11 @@ static const fs_archive_t g_archives[] =
 		.pfnAddArchive_Fullpath = FS_AddDir_Fullpath,
 		.load_wads = true,
 	}, {
+		.ext = "007",
+		.type = SEARCHPATH_OO7,
+		.pfnAddArchive_Fullpath = FS_AddOO7_Fullpath,
+		.real_archive = true,
+	}, {
 		.ext = "wad",
 		.type = SEARCHPATH_WAD,
 		.pfnAddArchive_Fullpath = FS_AddWad_Fullpath,

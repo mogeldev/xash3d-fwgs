@@ -38,6 +38,7 @@ typedef struct dir_s dir_t;
 typedef struct zip_s zip_t;
 typedef struct pack_s pack_t;
 typedef struct wfile_s wfile_t;
+typedef struct oo7_s oo7_t;
 typedef struct android_assets_s android_assets_t;
 
 #define FILE_BUFF_SIZE (2048)
@@ -83,6 +84,7 @@ typedef enum searchpathtype_e
 	SEARCHPATH_WAD,
 	SEARCHPATH_ZIP,
 	SEARCHPATH_PK3DIR, // it's actually a plain directory but it must behave like a ZIP archive,
+	SEARCHPATH_OO7,    // James Bond 007: Nightfire asset pack (assets.007)
 	SEARCHPATH_ANDROID_ASSETS
 } searchpathtype_t;
 
@@ -106,6 +108,7 @@ typedef struct searchpath_s
 		pack_t  *pack;
 		wfile_t *wad;
 		zip_t   *zip;
+		oo7_t   *oo7;
 		android_assets_t *assets;
 	};
 
@@ -253,6 +256,11 @@ searchpath_t *FS_AddWad_Fullpath( const char *wadfile, int flags );
 // zip.c
 //
 searchpath_t *FS_AddZip_Fullpath( const char *zipfile, int flags );
+
+//
+// oo7.c
+//
+searchpath_t *FS_AddOO7_Fullpath( const char *oo7file, int flags );
 
 //
 // dir.c
