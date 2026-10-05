@@ -809,6 +809,10 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 	if( !pid || !ctx.used || !ctx.tried || ( nplanes > 0 && ngeom <= 0 ))
 	{ free( pid ); free( ctx.used ); free( ctx.tried ); free( ctx.base.vs ); free( ctx.br ); free( seen ); free( order ); return 0; }
 
+	// Clipnode 0 is the "use the render nodes" sentinel, so a real hull root must
+	// never be 0: reserve it with a dummy clipnode when the lump is empty.
+	if( clips->len == 0 ) { buf_i32( clips, 0 ); buf_i16( clips, 0 ); buf_i16( clips, 0 ); }
+
 	for( int hull = 1; hull <= 3 && ok; hull++ )
 	{
 		size_t base_clip = clips->len, base_plane = planes->len;
