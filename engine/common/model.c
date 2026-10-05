@@ -25,6 +25,7 @@ GNU General Public License for more details.
 #include "server.h"
 #include "mod_nfmdl.h"
 #include "mod_nfspz.h"
+#include "mod_nfbsp.h"
 
 // Nightfire container magics (little-endian), see mod_nfmdl.c / mod_nfspz.c.
 #define IDNFMDLHEADER (('Z'<<24)+('L'<<16)+('D'<<8)+'M')	// "MDLZ"
@@ -349,7 +350,11 @@ static model_t *Mod_LoadModel( model_t *mod, qboolean crash )
 
 	// Nightfire models use their own container magics but are converted to the
 	// GoldSrc formats by the loaders below before parsing.
-	switch( *(uint *)buf )
+	if( NFBSP_IsVersion42( buf, length ))
+	{
+		Mod_LoadBrushModel( mod, buf, length, &loaded );	// converts BSP42 -> BSP30
+	}
+	else switch( *(uint *)buf )
 	{
 	case LittleLong( IDNFMDLHEADER ):	// "MDLZ" (Nightfire studio model)
 		Mod_LoadStudioModel( mod, buf, length, &loaded );

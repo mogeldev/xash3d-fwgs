@@ -4509,6 +4509,20 @@ qboolean Mod_TestBmodelLumps( file_t *f, const char *name, byte *mod_base, size_
 	if( buffersize < sizeof( *header ))
 		return false;
 
+	// Nightfire BSP42 maps are converted to BSP30 by the world loader
+	// (Mod_LoadBrushModel). Here we only validate and return the entity lump
+	// (BSP42 lump 0) so the server can spawn.
+	if( NFBSP_IsVersion42( mod_base, buffersize ))
+	{
+		const int *lumps = (const int *)( mod_base + sizeof( int ));
+		if( entities )
+		{
+			entities->fileofs = lumps[0];
+			entities->filelen = lumps[1];
+		}
+		return ( entities == NULL ) || ( entities->filelen > 0 );
+	}
+
 	// byte-swap BSP header and lump directory from little-endian
 	Mod_SwapBSPLumps( mod_base, buffersize );
 
