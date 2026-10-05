@@ -1675,6 +1675,8 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	outleaf_t *ol = NULL;                                       // leaves
 	outnode_t *on = NULL;                                       // nodes
 	outmodel_t *om = NULL;                                      // models
+	int *fs_off = NULL, *fs_list = NULL;   // per-surface face lists (node-sorted)
+	int *g_node_first = NULL, *g_node_count = NULL;
 
 	// surface -> first face index / face count
 	int *surf_first = (int *)malloc( sizeof( int ) * ( nsurfaces ? nsurfaces : 1 ));
@@ -1727,6 +1729,7 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 		free( tex_masked ); free( surf_skip );
 		free( ov ); free( oe0 ); free( oe1 ); free( ose ); free( of );
 		free( oms ); free( oti ); free( surf_first ); free( surf_count );
+		free( fs_off ); free( fs_list ); free( g_node_first ); free( g_node_count );
 		map_free( &vmap ); map_free( &ti_map );
 		*outsize = 0; return NULL;
 	}
@@ -1872,9 +1875,96 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	{
 		free( ov ); free( oe0 ); free( oe1 ); free( ose ); free( of );
 		free( oms ); free( oti ); free( surf_first ); free( surf_count );
+		free( fs_off ); free( fs_list ); free( g_node_first ); free( g_node_count );
 		free( tex_masked ); free( surf_skip ); free( leaf_visofs ); free( vislump.d );
 		map_free( &vmap ); map_free( &ti_map );
 		*outsize = 0; return NULL;
+	}
+
+	// --------------------------------------------------- node -> face assignment
+	// Xash draws the world from the nodes (node_firstsurface), so every node
+	// owns a contiguous range of world faces. Nightfire's faces follow the
+	// surface order, so re-sort the world-face prefix by the node whose plane a
+	// face lies on (descend from the root, like qbsp/hlbsp), and rebuild the
+	// per-surface face lists the leaves reference.
+	{
+		int world_nsurf = ( nmodels > 0 ) ? rd_i32( L[14] + 52 ) : 0;
+		if( world_nsurf > nsurfaces ) world_nsurf = nsurfaces;
+
+		int W = 0;   // world faces are a prefix of the face array
+		while( W < (int)nof && of[W].surface < world_nsurf ) W++;
+
+		if( W > 0 && nnodes > 0 && nplanes > 0 )
+		{
+			int *owner = (int *)malloc( sizeof( int ) * W );
+			int *newno = (int *)malloc( sizeof( int ) * W );
+			int *nfirst = (int *)calloc( nnodes, sizeof( int ));
+			int *ncount = (int *)calloc( nnodes, sizeof( int ));
+			outface_t *tmp = (outface_t *)malloc( sizeof( outface_t ) * W );
+
+			if( owner && newno && nfirst && ncount && tmp )
+			{
+				for( int fi = 0; fi < W; fi++ )
+				{
+					int e0 = ose[of[fi].firstedge];
+					const float *p = ov + oe0[e0 >= 0 ? e0 : -e0] * 3;
+					float cx = p[0], cy = p[1], cz = p[2];
+					int node = 0, own = 0, guard = 0;
+
+					while( node >= 0 && guard++ < 4096 )
+					{
+						const unsigned char *np = L[8] + node * 36;
+						int nplane = rd_i32( np );
+
+						if( nplane == of[fi].plane ) { own = node; break; }
+						if( nplane < 0 || nplane >= nplanes ) { own = node; break; }
+
+						const unsigned char *pl = L[1] + nplane * 20;
+						float d = rd_f32( pl ) * cx + rd_f32( pl + 4 ) * cy + rd_f32( pl + 8 ) * cz - rd_f32( pl + 12 );
+						int c = ( d >= 0.0f ) ? rd_i32( np + 4 ) : rd_i32( np + 8 );
+
+						if( c < 0 ) { own = node; break; }   // plane absent from the tree
+						node = c;
+					}
+					owner[fi] = own;
+					ncount[own]++;
+				}
+
+				int acc = 0, *fill = (int *)malloc( sizeof( int ) * nnodes );
+
+				for( int i = 0; i < nnodes; i++ ) { nfirst[i] = acc; acc += ncount[i]; }
+				if( fill )
+				{
+					memcpy( fill, nfirst, sizeof( int ) * nnodes );
+					for( int fi = 0; fi < W; fi++ ) newno[fi] = fill[owner[fi]]++;
+					free( fill );
+				}
+				for( int fi = 0; fi < W; fi++ ) tmp[newno[fi]] = of[fi];
+				for( int fi = 0; fi < W; fi++ ) of[fi] = tmp[fi];
+
+				g_node_first = nfirst; g_node_count = ncount;
+			}
+			else { free( nfirst ); free( ncount ); }
+			free( owner ); free( newno ); free( tmp );
+		}
+
+		// per-surface face lists (new face indices)
+		fs_off = (int *)calloc( nsurfaces + 1, sizeof( int ));
+		fs_list = (int *)malloc( sizeof( int ) * (( nof > 0 ) ? nof : 1 ));
+
+		if( fs_off && fs_list )
+		{
+			int *fill = (int *)malloc( sizeof( int ) * (( nsurfaces > 0 ) ? nsurfaces : 1 ));
+
+			for( size_t fi = 0; fi < nof; fi++ ) fs_off[of[fi].surface + 1]++;
+			for( int si = 0; si < nsurfaces; si++ ) fs_off[si + 1] += fs_off[si];
+			if( fill )
+			{
+				memcpy( fill, fs_off, sizeof( int ) * nsurfaces );
+				for( size_t fi = 0; fi < nof; fi++ ) fs_list[fill[of[fi].surface]++] = (int)fi;
+				free( fill );
+			}
+		}
 	}
 
 	// ------------------------------------------------------------ lightmaps
@@ -2048,11 +2138,22 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 		{
 			int si = rd_i32( L[12] + ( lsi + k ) * 4 );
 			if( si < 0 || si >= nsurfaces ) continue;
-			int start = surf_first[si], cnt = surf_count[si];
-			for( int f = 0; f < cnt; f++ )
+			if( fs_off )
 			{
-				if( nms + 1 > cms_cap ) { cms_cap = cms_cap ? cms_cap * 2 : 16384; oms = (unsigned short *)realloc( oms, cms_cap * 2 ); }
-				oms[nms++] = (unsigned short)( start + f );
+				for( int q = fs_off[si]; q < fs_off[si + 1]; q++ )
+				{
+					if( nms + 1 > cms_cap ) { cms_cap = cms_cap ? cms_cap * 2 : 16384; oms = (unsigned short *)realloc( oms, cms_cap * 2 ); }
+					oms[nms++] = (unsigned short)fs_list[q];
+				}
+			}
+			else
+			{
+				int start = surf_first[si], cnt = surf_count[si];
+				for( int f = 0; f < cnt; f++ )
+				{
+					if( nms + 1 > cms_cap ) { cms_cap = cms_cap ? cms_cap * 2 : 16384; oms = (unsigned short *)realloc( oms, cms_cap * 2 ); }
+					oms[nms++] = (unsigned short)( start + f );
+				}
 			}
 		}
 		ol[i].contents = ( type == 2 ) ? -2 : -1;
@@ -2092,7 +2193,8 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 		on[i].maxs[0] = (short)clamp_short( rd_f32( np + 24 ));
 		on[i].maxs[1] = (short)clamp_short( rd_f32( np + 28 ));
 		on[i].maxs[2] = (short)clamp_short( rd_f32( np + 32 ));
-		on[i].firstface = 0; on[i].numfaces = 0;
+		on[i].firstface = g_node_first ? (unsigned short)g_node_first[i] : 0;
+		on[i].numfaces  = g_node_count ? (unsigned short)g_node_count[i] : 0;
 	}
 
 	// ---- models
@@ -2478,6 +2580,7 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	free( ov ); free( oe0 ); free( oe1 ); free( ose ); free( of );
 	free( oms ); free( ol ); free( on ); free( om ); free( oti );
 	free( surf_first ); free( surf_count );
+	free( fs_off ); free( fs_list ); free( g_node_first ); free( g_node_count );
 	free( tex_masked ); free( surf_skip ); free( leaf_visofs );
 	map_free( &vmap ); map_free( &ti_map );
 	// note: vislump.d was moved into lumps[4] and is freed above
