@@ -26,6 +26,8 @@ GNU General Public License for more details.
 #include "swaplib.h"
 #include "ref_common.h"
 #include "mod_nfbsp.h"		// James Bond 007: Nightfire BSP42 compatibility
+#include "mod_nfmdl.h"		// James Bond 007: Nightfire MDLZ v14 compatibility
+#include "mod_nfspz.h"		// James Bond 007: Nightfire SPZ2 compatibility
 #if defined( HAVE_OPENMP )
 #include <omp.h>
 #endif // HAVE_OPENMP
@@ -4904,64 +4906,115 @@ static void Test_Mod_FrameIndexCalculation( void )
 // brush-model loader (Mod_LoadBrushModel -> NFBSP_Convert42 -> BSP30 pipeline).
 // Only runs when a Nightfire map is present in the mounted game dir; otherwise
 // it is skipped so the test suite still passes without retail data.
+static byte *Test_ReadFile( const char *path, fs_offset_t *len )
+{
+	FILE *f;
+	long sz;
+	byte *b;
+
+	if( !path || !*path ) return NULL;
+	f = fopen( path, "rb" );
+	if( !f ) return NULL;
+	fseek( f, 0, SEEK_END );
+	sz = ftell( f );
+	fseek( f, 0, SEEK_SET );
+	if( sz <= 0 ) { fclose( f ); return NULL; }
+	b = (byte *)malloc( (size_t)sz );
+	if( !b || fread( b, 1, (size_t)sz, f ) != (size_t)sz ) { free( b ); fclose( f ); return NULL; }
+	fclose( f );
+	*len = (fs_offset_t)sz;
+	return b;
+}
+
+// BSP42 -> BSP30: run the engine's converter and structurally check the output.
 static void Test_NightfireWorldLoad( void )
 {
-	const char *envpath = getenv( "NF_TEST_MAP" );
 	fs_offset_t len = 0;
-	byte *buf = NULL;
-	FILE *fp;
+	byte *buf = Test_ReadFile( getenv( "NF_TEST_MAP" ), &len );
+	size_t outsize = 0;
+	byte *b30;
+	dheader_t *h;
 
-	// The engine's game-dir search path is not fully set up at this test stage,
-	// so load the map from an explicit path given by NF_TEST_MAP (skip if unset).
-	if( envpath && *envpath )
-	{
-		fp = fopen( envpath, "rb" );
-		if( fp )
-		{
-			len = 0;
-			fseek( fp, 0, SEEK_END );
-			len = (fs_offset_t)ftell( fp );
-			fseek( fp, 0, SEEK_SET );
-			if( len > 0 )
-			{
-				buf = (byte *)malloc( (size_t)len );
-				if( buf && fread( buf, 1, (size_t)len, fp ) != (size_t)len )
-				{
-					free( buf );
-					buf = NULL;
-				}
-			}
-			fclose( fp );
-		}
-	}
-
-	if( !buf )
-	{
-		Msg( "nfbsp: NF_TEST_MAP not set or unreadable, test skipped\n" );
-		return;
-	}
-
+	if( !buf ) { Msg( "nfbsp: NF_TEST_MAP not set or unreadable, skipped\n" ); return; }
 	TASSERT( NFBSP_IsVersion42( buf, (size_t)len ));
-
-	// Run the engine's own BSP42 -> BSP30 converter and structurally check the
-	// result. (A full Mod_LoadBrushModel needs the renderer for texture loading,
-	// which is not up at this test stage, so we validate the converted lumps.)
+	b30 = NFBSP_Convert42( buf, len, &outsize );
+	TASSERT( b30 != NULL );
+	if( b30 )
 	{
-		size_t outsize = 0;
-		byte *b30 = NFBSP_Convert42( buf, len, &outsize );
+		h = (dheader_t *)b30;
+		TASSERT( outsize > sizeof( dheader_t ));
+		TASSERT_EQi( h->version, HLBSP_VERSION );
+		TASSERT( h->lumps[LUMP_NODES].filelen > 0 );
+		TASSERT( h->lumps[LUMP_FACES].filelen > 0 );
+		TASSERT( h->lumps[LUMP_MODELS].filelen > 0 );
+		TASSERT( h->lumps[LUMP_PLANES].filelen > 0 );
+		free( b30 );
+	}
+	free( buf );
+}
 
-		TASSERT( b30 != NULL );
-		if( b30 )
-		{
-			dheader_t *h = (dheader_t *)b30;
-			TASSERT( outsize > sizeof( dheader_t ));
-			TASSERT_EQi( h->version, HLBSP_VERSION );
-			TASSERT( h->lumps[LUMP_NODES].filelen > 0 );
-			TASSERT( h->lumps[LUMP_FACES].filelen > 0 );
-			TASSERT( h->lumps[LUMP_MODELS].filelen > 0 );
-			TASSERT( h->lumps[LUMP_PLANES].filelen > 0 );
-			free( b30 );
-		}
+// MDLZ v14 -> GoldSrc MDL v10: engine converter, then check the header.
+static void Test_NightfireModelLoad( void )
+{
+	fs_offset_t len = 0;
+	byte *buf = Test_ReadFile( getenv( "NF_TEST_MDL" ), &len );
+	size_t outsize = 0;
+	byte *mdl;
+
+	if( !buf ) { Msg( "nfmdl: NF_TEST_MDL not set or unreadable, skipped\n" ); return; }
+	TASSERT( NFMDL_IsVersion14( buf, (size_t)len ));
+	mdl = NFMDL_Convert14( buf, len, &outsize );
+	TASSERT( mdl != NULL );
+	if( mdl )
+	{
+		TASSERT( outsize > 8 );
+		TASSERT_EQi( *(int *)mdl, IDSTUDIOHEADER );
+		TASSERT_EQi( *(int *)( mdl + 4 ), STUDIO_VERSION );
+		free( mdl );
+	}
+	free( buf );
+}
+
+// SPZ2 -> GoldSrc RGBA sprite. Frames are synthesized here: the image decoder
+// isn't part of the test link, and real PNG frame decoding is covered by
+// work/check_spr_all.py and the in-game FS_LoadImage path.
+static int Test_NightfireSpzFrame( const char *name, int *w, int *h, unsigned char **rgba )
+{
+	unsigned char *out;
+	int px = 4 * 4, i;
+
+	(void)name;
+	*w = 4; *h = 4;
+	out = (unsigned char *)malloc( (size_t)px * 4 );
+	if( !out ) return 0;
+	for( i = 0; i < px; i++ )
+	{
+		out[i*4+0] = (unsigned char)i;
+		out[i*4+1] = 0;
+		out[i*4+2] = 0;
+		out[i*4+3] = 255;
+	}
+	*rgba = out;
+	return 1;
+}
+
+static void Test_NightfireSpriteLoad( void )
+{
+	fs_offset_t len = 0;
+	byte *buf = Test_ReadFile( getenv( "NF_TEST_SPZ" ), &len );
+	size_t outsize = 0;
+	byte *spr;
+
+	if( !buf ) { Msg( "nfspz: NF_TEST_SPZ not set or unreadable, skipped\n" ); return; }
+	TASSERT( NFSPZ_IsVersion2( buf, (size_t)len ));
+	spr = NFSPZ_Convert2( buf, len, Test_NightfireSpzFrame, &outsize );
+	TASSERT( spr != NULL );
+	if( spr )
+	{
+		TASSERT( outsize > 8 );
+		TASSERT_EQi( *(int *)spr, IDSPRITEHEADER );
+		TASSERT_EQi( *(int *)( spr + 4 ), SPRITE_VERSION_32 );
+		free( spr );
 	}
 	free( buf );
 }
@@ -4969,6 +5022,8 @@ static void Test_NightfireWorldLoad( void )
 void Test_RunNightfire( void )
 {
 	TRUN( Test_NightfireWorldLoad() );
+	TRUN( Test_NightfireModelLoad() );
+	TRUN( Test_NightfireSpriteLoad() );
 }
 
 void Test_RunModBmodel( void )
