@@ -28,6 +28,9 @@ Lightmaps, PVS and clip hulls 1-3 are emitted empty / disabled in this pass.
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#ifdef NFBSP_STANDALONE
+#include <time.h>
+#endif
 
 #ifdef NFBSP_STANDALONE
 // Allows compiling this translation unit on its own for unit testing without
@@ -260,7 +263,7 @@ typedef struct {
 #define NFH_EPS      0.05f
 #define NFH_MAXV     256
 #define NFH_MAXCELL  128
-#define NFH_MAXDEPTH 256
+#define NFH_MAXDEPTH 1024
 #define NFH_MAXFRAG  32768
 #define NFH_LIMIT    500000	// clipnodes the world hulls may consume (bsp30ext)
 
@@ -519,6 +522,7 @@ typedef struct {
 	int   id;		// canonical geometric plane id
 	int   npts;
 	float *pts;		// 3*npts, convex
+	float mins[3], maxs[3];	// bounds (CSG bounding-box reject)
 } nfw_face_t;
 
 typedef struct { nfw_face_t **f; int n, cap; } nfw_list_t;
@@ -534,10 +538,15 @@ typedef struct {
 	unsigned char *used;
 	int          dbgmax;
 	int          ncreated, nconsumed;
+	int          nnodes;
 	int         *tried, gen;
 	nfw_br_t    *br;
 	int          nbr;
 } nfw_ctx_t;
+
+#ifdef NFBSP_STANDALONE
+static double nfw_time( void ) { return (double)clock() / (double)CLOCKS_PER_SEC; }
+#endif
 
 static void nfw_add( nfw_list_t *l, nfw_face_t *f )
 {
@@ -551,6 +560,18 @@ static void nfw_add( nfw_list_t *l, nfw_face_t *f )
 	l->f[l->n++] = f;
 }
 
+static void nfw_set_bounds( nfw_face_t *f )
+{
+	for( int t = 0; t < 3; t++ ) { f->mins[t] = 1e30f; f->maxs[t] = -1e30f; }
+	for( int i = 0; i < f->npts; i++ )
+		for( int t = 0; t < 3; t++ )
+		{
+			float v = f->pts[i*3+t];
+			if( v < f->mins[t] ) f->mins[t] = v;
+			if( v > f->maxs[t] ) f->maxs[t] = v;
+		}
+}
+
 static nfw_face_t *nfw_newface( const float *n, float d, int id, const float *pts, int npts )
 {
 	nfw_face_t *f = (nfw_face_t *)malloc( sizeof( nfw_face_t ));
@@ -559,6 +580,7 @@ static nfw_face_t *nfw_newface( const float *n, float d, int id, const float *pt
 	f->pts = (float *)malloc( sizeof( float ) * 3 * ( npts ? npts : 1 ));
 	if( !f->pts ) { free( f ); return NULL; }
 	memcpy( f->pts, pts, sizeof( float ) * 3 * npts );
+	nfw_set_bounds( f );
 	return f;
 }
 
@@ -617,6 +639,255 @@ static void nfw_split_poly( const float *n, float d, const float *in, int nin,
 	*nback = nb; *nfront = nf;
 }
 
+// ---------------------------------------------------------------------------
+// hlcsg CSG face merge (docs/csg-plan.md).  Port of qcsg.cpp
+// ClipFace/CSGBrush (nightfire-open/tools/compiletools/hlcsg/qcsg.cpp).
+//
+// The faces of a brush are chewed up by every plane of every other brush; a
+// fragment that ends up inside another brush is discarded, so the survivors
+// are exactly the union-boundary faces.  Coplanar faces use the directed-plane
+// precedence rule so coincident surfaces are emitted once and shared
+// interfaces (opposite orientation) are dropped.
+// ---------------------------------------------------------------------------
+
+// Convex polygon of one expanded brush side: the brush-vertex points that lie
+// on that plane.  bv/nv is the brush's expanded vertex set.
+static int nfw_side_poly( const float *bv, int nv, const nfh_plane_t *pl, float *pts )
+{
+	float nx = pl->n[0], ny = pl->n[1], nz = pl->n[2], d = pl->d;
+	int nf = 0;
+
+	for( int i = 0; i < nv && nf < NFW_MAXPTS; i++ )
+		if( fabsf( nx*bv[i*3] + ny*bv[i*3+1] + nz*bv[i*3+2] - d ) <= NFH_EPS )
+		{
+			pts[nf*3] = bv[i*3]; pts[nf*3+1] = bv[i*3+1]; pts[nf*3+2] = bv[i*3+2];
+			nf++;
+		}
+	return nf;
+}
+
+// qcsg ClipFace: clip f by the outward plane sp.  The fragment on the back
+// (inside sp's halfspace) is returned; fragments on the front (outside sp) are
+// appended to *outside.  The face is classified by the signed extent of its
+// vertices against sp:
+//   * within +-NFH_EPS  -> coplanar: directed-plane precedence (`overwrite`);
+//   * entirely >= -eps  -> outside brush2 (front);
+//   * entirely <= +eps  -> inside brush2 (back);
+//   * otherwise         -> genuine crossing, split into front + back.
+// The explicit classification (instead of relying on nfw_split_poly's eps
+// buckets) avoids fake splits of faces that only graze the plane.
+static nfw_face_t *nfw_clip_face( nfw_face_t *f, nfw_list_t *outside, const nfh_plane_t *sp, int overwrite )
+{
+	float smin = 1e30f, smax = -1e30f;
+
+	for( int v = 0; v < f->npts; v++ )
+	{
+		float s = sp->n[0]*f->pts[v*3] + sp->n[1]*f->pts[v*3+1] + sp->n[2]*f->pts[v*3+2] - sp->d;
+		if( s < smin ) smin = s;
+		if( s > smax ) smax = s;
+	}
+
+	if( smin >= -NFH_EPS && smax <= NFH_EPS )
+	{
+		int same = ( f->n[0]*sp->n[0] + f->n[1]*sp->n[1] + f->n[2]*sp->n[2] ) >= 0.0f;
+		if( !same ) return f;			// opposite orientation: keep for the other planes
+		if( overwrite ) return f;		// later brush overwrites: let the other planes decide
+		nfw_add( outside, f );			// earlier brush: keep it
+		return NULL;
+	}
+	if( smin >= -NFH_EPS )				// entirely on the front side
+	{
+		nfw_add( outside, f );
+		return NULL;
+	}
+	if( smax <= NFH_EPS )				// entirely on the back side
+	{
+		return f;
+	}
+
+	{
+		float *bp = (float *)malloc( sizeof( float ) * 3 * ( f->npts + 2 ));
+		float *fp = (float *)malloc( sizeof( float ) * 3 * ( f->npts + 2 ));
+		int nb = 0, nf = 0;
+
+		if( !bp || !fp ) { free( bp ); free( fp ); return f; }
+		nfw_split_poly( sp->n, sp->d, f->pts, f->npts, bp, &nb, fp, &nf );
+
+		if( nf < 3 ) { free( bp ); free( fp ); return f; }			// entirely back (inside)
+		if( nb < 3 ) { free( bp ); free( fp ); nfw_add( outside, f ); return NULL; }	// entirely front
+
+		// real split: the front fragment goes to the outside list, f keeps the back
+		{
+			nfw_face_t *front;
+			float *np;
+
+			nfw_order( f->n, fp, nf );
+			front = nfw_newface( f->n, f->d, f->id, fp, nf );
+			if( front ) nfw_add( outside, front );
+			free( fp );
+
+			np = (float *)malloc( sizeof( float ) * 3 * nb );
+			if( np )
+			{
+				memcpy( np, bp, sizeof( float ) * 3 * nb );
+				free( f->pts );
+				f->pts = np; f->npts = nb;
+				nfw_set_bounds( f );
+			}
+			free( bp );
+		}
+	}
+	return f;
+}
+
+// Does a face's bounding box intersect a brush's expanded bounding box?
+static int nfw_bbox_hit( const nfw_face_t *f, const nfw_br_t *b )
+{
+	for( int t = 0; t < 3; t++ )
+	{
+		if( f->maxs[t] < b->mins[t] - NFH_EPS ) return 0;
+		if( f->mins[t] > b->maxs[t] + NFH_EPS ) return 0;
+	}
+	return 1;
+}
+
+// Do two expanded brush bounding boxes overlap?  When they do not, the brush
+// cannot clip any of the other's (bounded) faces, so the whole pair is skipped.
+static int nfw_br_overlap( const nfw_br_t *a, const nfw_br_t *b )
+{
+	for( int t = 0; t < 3; t++ )
+	{
+		if( a->maxs[t] < b->mins[t] - NFH_EPS ) return 0;
+		if( a->mins[t] > b->maxs[t] + NFH_EPS ) return 0;
+	}
+	return 1;
+}
+
+// Build the union-boundary faces of the whole brush set into *out.
+static void nfw_csg_union_faces( nfw_ctx_t *ctx, int cnt, int hull, nfw_list_t *out )
+{
+	nfw_list_t *bf;
+	int k, k2, i, j;
+#ifdef NFBSP_STANDALONE
+	double t0 = nfw_time();
+#else
+	(void)hull;
+#endif
+
+	bf = (nfw_list_t *)calloc( cnt, sizeof( nfw_list_t ));
+	if( !bf ) return;
+
+	// Source: one convex polygon per expanded brush side.
+	for( k = 0; k < cnt; k++ )
+	{
+		int nv = nfh_verts( &ctx->base, ctx->br[k].pl, ctx->br[k].n );
+		for( j = 0; j < ctx->br[k].n; j++ )
+		{
+			float fp[NFW_MAXPTS*3];
+			int nf = nfw_side_poly( ctx->base.vs, nv, &ctx->br[k].pl[j], fp );
+			nfw_face_t *fc;
+
+			if( nf < 3 ) continue;
+			nfw_order( ctx->br[k].pl[j].n, fp, nf );
+			fc = nfw_newface( ctx->br[k].pl[j].n, ctx->br[k].pl[j].d, ctx->br[k].pl[j].id, fp, nf );
+			if( fc ) nfw_add( &bf[k], fc );
+		}
+	}
+#ifdef NFBSP_STANDALONE
+	fprintf( stderr, "[nfw] hull %d: source faces built, %.1fs\n", hull, nfw_time() - t0 );
+#endif
+
+	// CSGBrush: take each brush's faces and clip them against every other brush.
+	for( k = 0; k < cnt; k++ )
+	{
+		nfw_list_t outside = bf[k];		// take ownership of brush k's faces
+
+		bf[k].f = NULL; bf[k].n = bf[k].cap = 0;
+
+#ifdef NFBSP_STANDALONE
+		if(( k % 500 ) == 0 )
+			fprintf( stderr, "[nfw] hull %d: csg brush %d/%d out=%d %.0fs\n", hull, k, cnt, out->n, nfw_time() - t0 );
+#endif
+
+		for( k2 = 0; k2 < cnt && outside.n; k2++ )
+		{
+			nfw_list_t newout = { NULL, 0, 0 };
+			int overwrite;
+
+			if( k2 == k ) continue;
+			if( !nfw_br_overlap( &ctx->br[k], &ctx->br[k2] )) continue;
+			overwrite = ( k2 > k );
+
+			for( i = 0; i < outside.n; i++ )
+			{
+				nfw_face_t *f = outside.f[i];
+
+				if( !nfw_bbox_hit( f, &ctx->br[k2] )) { nfw_add( &newout, f ); continue; }
+				for( j = 0; j < ctx->br[k2].n && f; j++ )
+					f = nfw_clip_face( f, &newout, &ctx->br[k2].pl[j], overwrite );
+				if( f ) { free( f->pts ); free( f ); }		// inside brush k2 -> discard
+			}
+
+			free( outside.f );
+			outside = newout;
+		}
+
+		// Everything left is a union-boundary fragment contributed by brush k.
+		for( i = 0; i < outside.n; i++ ) nfw_add( out, outside.f[i] );
+		free( outside.f );
+	}
+	free( bf );
+}
+
+#ifdef NFBSP_STANDALONE
+// Dump CSG faces (custom .faces + .obj) for the offline verifier.
+static void nfw_dump_faces( const char *prefix, int hull, const nfw_list_t *l )
+{
+	char path[1024];
+	FILE *fp;
+
+	if( !prefix || !*prefix ) return;
+
+	snprintf( path, sizeof( path ), "%s.hull%d.faces", prefix, hull );
+	fp = fopen( path, "wb" );
+	if( fp )
+	{
+		fprintf( fp, "# nfw csg union faces hull %d count %d\n", hull, l->n );
+		for( int i = 0; i < l->n; i++ )
+		{
+			nfw_face_t *f = l->f[i];
+			fprintf( fp, "face %.6f %.6f %.6f %.6f %d %d\n", f->n[0], f->n[1], f->n[2], f->d, f->id, f->npts );
+			for( int v = 0; v < f->npts; v++ )
+				fprintf( fp, "%.4f %.4f %.4f\n", f->pts[v*3], f->pts[v*3+1], f->pts[v*3+2] );
+		}
+		fclose( fp );
+	}
+
+	snprintf( path, sizeof( path ), "%s.hull%d.obj", prefix, hull );
+	fp = fopen( path, "wb" );
+	if( fp )
+	{
+		unsigned base = 1;
+		for( int i = 0; i < l->n; i++ )
+		{
+			nfw_face_t *f = l->f[i];
+			for( int v = 0; v < f->npts; v++ )
+				fprintf( fp, "v %.4f %.4f %.4f\n", f->pts[v*3], f->pts[v*3+1], f->pts[v*3+2] );
+		}
+		for( int i = 0; i < l->n; i++ )
+		{
+			nfw_face_t *f = l->f[i];
+			fprintf( fp, "f" );
+			for( int v = 0; v < f->npts; v++ ) fprintf( fp, " %u", base + v );
+			fprintf( fp, "\n" );
+			base += f->npts;
+		}
+		fclose( fp );
+	}
+	fprintf( stderr, "[nfw] dumped hull %d -> %s.hull%d.{faces,obj}\n", hull, prefix, hull );
+}
+#endif
+
 static int nfw_point_solid( nfw_ctx_t *ctx, const float *p )
 {
 	for( int b = 0; b < ctx->nbr; b++ )
@@ -646,6 +917,11 @@ static int nfw_rec( nfw_ctx_t *ctx, nfh_plane_t *cell, int nc, nfw_list_t *faces
 
 	if( ctx->base.overflow || depth > NFH_MAXDEPTH ) { ctx->base.overflow = 1; nfw_free_list( faces ); return -1; }
 	if( depth > ctx->dbgmax ) ctx->dbgmax = depth;
+	ctx->nnodes++;
+#ifdef NFBSP_STANDALONE
+	if(( ctx->nnodes % 20000 ) == 0 )
+		fprintf( stderr, "[nfw]   ... %d nodes, depth %d, %.0fs\n", ctx->nnodes, ctx->dbgmax, nfw_time());
+#endif
 
 	nv = nfh_verts( &ctx->base, cell, nc );
 	if( nv <= 0 ) { nfw_free_list( faces ); return -1; }
@@ -673,15 +949,27 @@ static int nfw_rec( nfw_ctx_t *ctx, nfh_plane_t *cell, int nc, nfw_list_t *faces
 		for( int j = 0; j < faces->n; j++ )
 		{
 			nfw_face_t *g = faces->f[j];
-			float smin = 1e30f, smax = -1e30f;
+			float bmin = 0.0f, bmax = 0.0f;
 			if( g->id == f->id ) continue;
-			for( int v = 0; v < g->npts; v++ )
+			// Bounding-box reject: if g's whole AABB lies on one side of
+			// f's plane it cannot cross (exact, avoids the per-vertex loop).
+			for( int t = 0; t < 3; t++ )
 			{
-				float s = f->n[0]*g->pts[v*3]+f->n[1]*g->pts[v*3+1]+f->n[2]*g->pts[v*3+2]-f->d;
-				if( s<smin ) smin=s;
-				if( s>smax ) smax=s;
+				float nn = f->n[t];
+				bmin += nn * ( nn >= 0.0f ? g->mins[t] : g->maxs[t] );
+				bmax += nn * ( nn >= 0.0f ? g->maxs[t] : g->mins[t] );
 			}
-			if( smin < -NFH_EPS && smax > NFH_EPS ) cross++;
+			if( bmin - f->d >= -NFH_EPS || bmax - f->d <= NFH_EPS ) continue;
+			{
+				float smin = 1e30f, smax = -1e30f;
+				for( int v = 0; v < g->npts; v++ )
+				{
+					float s = f->n[0]*g->pts[v*3]+f->n[1]*g->pts[v*3+1]+f->n[2]*g->pts[v*3+2]-f->d;
+					if( s<smin ) smin=s;
+					if( s>smax ) smax=s;
+				}
+				if( smin < -NFH_EPS && smax > NFH_EPS ) cross++;
+			}
 		}
 		if( cross < bestcross ||
 		    ( cross == bestcross && ( ax < bestax || ( ax == bestax && dist < bestdist ))))
@@ -872,7 +1160,21 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 			}
 		}
 
-		// build boundary faces + mark interior
+		// build boundary faces: hlcsg CSG union (NFW_USE_CSG) or the older
+		// conservative interior-face marking.
+#ifdef NFW_USE_CSG
+#ifdef NFBSP_STANDALONE
+		{
+			double tcsg = nfw_time();
+			fprintf( stderr, "[nfw] hull %d: csg start (%d brushes)\n", hull, cnt );
+			nfw_csg_union_faces( &ctx, cnt, hull, &faces );
+			fprintf( stderr, "[nfw] hull %d: csg done %.1fs, %d faces\n", hull, nfw_time() - tcsg, faces.n );
+			nfw_dump_faces( getenv( "NFW_CSG_DUMP" ), hull, &faces );
+		}
+#else
+		nfw_csg_union_faces( &ctx, cnt, hull, &faces );
+#endif
+#else
 		for( int k = 0; k < cnt && ok; k++ )
 		{
 			float *bv = (float *)malloc( sizeof(float) * NFH_MAXV * 3 );
@@ -921,25 +1223,40 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 			}
 			free( bv );
 		}
+#endif
 
-		cell[0].n[0] = -1; cell[0].n[1] = 0; cell[0].n[2] = 0; cell[0].d = -rd_f32( L[14] + 0 );
-		cell[1].n[0] =  1; cell[1].n[1] = 0; cell[1].n[2] = 0; cell[1].d =  rd_f32( L[14] + 12 );
-		cell[2].n[0] = 0; cell[2].n[1] = -1; cell[2].n[2] = 0; cell[2].d = -rd_f32( L[14] + 4 );
-		cell[3].n[0] = 0; cell[3].n[1] =  1; cell[3].n[2] = 0; cell[3].d =  rd_f32( L[14] + 16 );
-		cell[4].n[0] = 0; cell[4].n[1] = 0; cell[4].n[2] = -1; cell[4].d = -rd_f32( L[14] + 8 );
-		cell[5].n[0] = 0; cell[5].n[1] = 0; cell[5].n[2] =  1; cell[5].d =  rd_f32( L[14] + 20 );
+		// The hull is the union of the *expanded* brushes, so it can extend past
+		// the world model bounds by the hull extents.  Grow the root cell to
+		// that expanded box, otherwise the margin is outside the tree's domain
+		// and points there (check_clip_world samples it) cannot be classified.
+		{
+			float ex[3];
+			for( int t = 0; t < 3; t++ )
+				ex[t] = ( hmaxs[hull][t] > -hmins[hull][t] ) ? hmaxs[hull][t] : -hmins[hull][t];
+			ex[0] += 4.0f; ex[1] += 4.0f; ex[2] += 4.0f;
+			cell[0].n[0] = -1; cell[0].n[1] = 0; cell[0].n[2] = 0; cell[0].d = -rd_f32( L[14] + 0 ) + ex[0];
+			cell[1].n[0] =  1; cell[1].n[1] = 0; cell[1].n[2] = 0; cell[1].d =  rd_f32( L[14] + 12 ) + ex[0];
+			cell[2].n[0] = 0; cell[2].n[1] = -1; cell[2].n[2] = 0; cell[2].d = -rd_f32( L[14] + 4 ) + ex[1];
+			cell[3].n[0] = 0; cell[3].n[1] =  1; cell[3].n[2] = 0; cell[3].d =  rd_f32( L[14] + 16 ) + ex[1];
+			cell[4].n[0] = 0; cell[4].n[1] = 0; cell[4].n[2] = -1; cell[4].d = -rd_f32( L[14] + 8 ) + ex[2];
+			cell[5].n[0] = 0; cell[5].n[1] = 0; cell[5].n[2] =  1; cell[5].d =  rd_f32( L[14] + 20 ) + ex[2];
+		}
 
 		ctx.base.overflow = 0;
 		ctx.dbgmax = 0;
 		ctx.ncreated = 0; ctx.nconsumed = 0;
+		ctx.nnodes = 0;
 		ctx.gen = 1;
 #ifdef NFBSP_STANDALONE
-		fprintf( stderr, "[nfw] hull %d: boundary faces=%d\n", hull, faces.n );
-#endif
+		{
+			double t0 = nfw_time();
+			fprintf( stderr, "[nfw] hull %d: bsp start (%d faces)\n", hull, faces.n );
+			idx = nfw_rec( &ctx, cell, 6, &faces, 0 );
+			fprintf( stderr, "[nfw] hull %d: bsp done %.1fs, idx=%d overflow=%d clips=%zu planes=%zu depth=%d nodes=%d created=%d consumed=%d\n",
+				hull, nfw_time() - t0, idx, ctx.base.overflow, clips->len / 12, planes->len / 20, ctx.dbgmax, ctx.nnodes, ctx.ncreated, ctx.nconsumed );
+		}
+#else
 		idx = nfw_rec( &ctx, cell, 6, &faces, 0 );
-#ifdef NFBSP_STANDALONE
-		fprintf( stderr, "[nfw] hull %d: idx=%d overflow=%d clips=%zu planes=%zu depth=%d created=%d consumed=%d\n",
-			hull, idx, ctx.base.overflow, clips->len / 12, planes->len / 20, ctx.dbgmax, ctx.ncreated, ctx.nconsumed );
 #endif
 		nfw_free_list( &faces );
 		for( int k = 0; k < cnt; k++ ) free( ctx.br[k].pl );
