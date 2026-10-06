@@ -1841,63 +1841,84 @@ static void CountClipNodes32_r( mclipnode32_t *src, hull_t *hull, int nodenum )
 	CountClipNodes32_r( src, hull, src[nodenum].children[1] );
 }
 
-static void CountDClipNodes_r( dclipnode32_t *src, hull_t *hull, int nodenum, const int max_clipnodes )
-{
-	// leaf?
-	if( nodenum < 0 ) return;
-
-	if( hull->lastclipnode == max_clipnodes )
-		Host_Error( "%s: MAX_MAP_CLIPNODES (%d) limit exceeded\n", __func__, max_clipnodes );
-	hull->lastclipnode++;
-
-	CountDClipNodes_r( src, hull, src[nodenum].children[0], max_clipnodes );
-	CountDClipNodes_r( src, hull, src[nodenum].children[1], max_clipnodes );
-}
-
 /*
 ==================
-RemapClipNodes_r
+Mod_RemapClipNodes
+
+copy the clipnodes reachable from headnode into the hull with local indexes
+(bsp30ext). Every source node is emitted once, in DFS order with the root at
+index 0, so hulls whose nodes share subtrees (a DAG, as in the converted
+Nightfire brush-model hulls) keep their size instead of being expanded path
+by path. Iterative, so long chains cannot exhaust the stack.
 ==================
 */
-static int RemapClipNodes_r( dbspmodel_t *bmod, dclipnode32_t *srcnodes, hull_t *hull, int nodenum )
+static void Mod_RemapClipNodes( dbspmodel_t *bmod, model_t *mod, model_t *world, hull_t *hull, int headnode )
 {
-	// leaf?
-	if( nodenum < 0 )
-		return nodenum;
+	const int maxnodes = bmod->hulls32bit ? MAX_MAP_CLIPNODES_BSP2 : MAX_MAP_CLIPNODES_HLBSP;
+	const dclipnode32_t *src = bmod->clipnodes_out;
+	const int numsrc = mod->numclipnodes;
+	int *remap = Mem_Malloc( world->mempool, sizeof( *remap ) * numsrc );
+	int *order = Mem_Malloc( world->mempool, sizeof( *order ) * numsrc );
+	int *stack = Mem_Malloc( world->mempool, sizeof( *stack ) * ( numsrc * 2 + 1 ));
+	int count = 0, sp = 0;
 
-	// emit a clipnode
+	for( int i = 0; i < numsrc; i++ )
+		remap[i] = -1;
+
+	stack[sp++] = headnode;
+	while( sp > 0 )
+	{
+		const int n = stack[--sp];
+
+		if( n < 0 || n >= numsrc || remap[n] >= 0 )
+			continue; // leaf, invalid or already emitted
+
+		if( count == maxnodes )
+			Host_Error( "%s: MAX_MAP_CLIPNODES (%d) limit exceeded\n", __func__, maxnodes );
+
+		remap[n] = count;
+		order[count++] = n;
+
+		// push children[1] first so children[0] is visited next
+		stack[sp++] = src[n].children[1];
+		stack[sp++] = src[n].children[0];
+	}
+
 	if( bmod->hulls32bit )
-	{
-		if( hull->lastclipnode == MAX_MAP_CLIPNODES_BSP2 )
-			Host_Error( "%s: MAX_MAP_CLIPNODES_BSP2 limit exceeded\n", __func__ );
-	}
-	else
-	{
-		if( hull->lastclipnode == MAX_MAP_CLIPNODES_HLBSP )
-			Host_Error( "%s: MAX_MAP_CLIPNODES_HLBSP limit exceeded\n", __func__ );
-	}
+		hull->clipnodes32 = Mem_Malloc( world->mempool, sizeof( *hull->clipnodes32 ) * count );
+	else hull->clipnodes16 = Mem_Malloc( world->mempool, sizeof( *hull->clipnodes16 ) * count );
 
-	dclipnode32_t *src = srcnodes + nodenum;
-
-	int c = hull->lastclipnode;
-	hull->lastclipnode++;
-
-	if( bmod->hulls32bit )
+	for( int k = 0; k < count; k++ )
 	{
-		mclipnode32_t *out = &hull->clipnodes32[c];
-		out->planenum = src->planenum;
+		const dclipnode32_t *in = &src[order[k]];
+		int children[2];
+
 		for( int i = 0; i < 2; i++ )
-			out->children[i] = RemapClipNodes_r( bmod, srcnodes, hull, src->children[i] );
-	}
-	else
-	{
-		mclipnode16_t *out = &hull->clipnodes16[c];
-		out->planenum = src->planenum;
-		for( int i = 0; i < 2; i++ )
-			out->children[i] = RemapClipNodes_r( bmod, srcnodes, hull, src->children[i] );
+		{
+			const int c = in->children[i];
+			children[i] = ( c >= 0 && c < numsrc ) ? remap[c] : ( c >= 0 ? CONTENTS_EMPTY : c );
+		}
+
+		if( bmod->hulls32bit )
+		{
+			hull->clipnodes32[k].planenum = in->planenum;
+			hull->clipnodes32[k].children[0] = children[0];
+			hull->clipnodes32[k].children[1] = children[1];
+		}
+		else
+		{
+			hull->clipnodes16[k].planenum = in->planenum;
+			hull->clipnodes16[k].children[0] = children[0];
+			hull->clipnodes16[k].children[1] = children[1];
+		}
 	}
 
-	return c;
+	hull->planes = mod->planes; // share planes
+	hull->lastclipnode = count;
+
+	Mem_Free( stack );
+	Mem_Free( order );
+	Mem_Free( remap );
 }
 
 /*
@@ -2053,22 +2074,7 @@ static void Mod_SetupHull( dbspmodel_t *bmod, model_t *mod, int headnode, int hu
 	if(( headnode == -1 ) || ( hullnum != 1 && headnode == 0 ))
 		return; // hull missed
 
-	// fit array to real count
-	if( bmod->hulls32bit )
-	{
-		CountDClipNodes_r( bmod->clipnodes_out, hull, headnode, MAX_MAP_CLIPNODES_BSP2 );
-		hull->clipnodes32 = Mem_Malloc( world->mempool, sizeof( *hull->clipnodes32 ) * hull->lastclipnode );
-	}
-	else
-	{
-		CountDClipNodes_r( bmod->clipnodes_out, hull, headnode, MAX_MAP_CLIPNODES_HLBSP );
-		hull->clipnodes16 = Mem_Malloc( world->mempool, sizeof( *hull->clipnodes16 ) * hull->lastclipnode );
-	}
-
-	hull->planes = mod->planes; // share planes
-	hull->lastclipnode = 0; // restart counting
-
-	RemapClipNodes_r( bmod, bmod->clipnodes_out, hull, headnode ); // remap clipnodes to 16-bit indexes
+	Mod_RemapClipNodes( bmod, mod, world, hull, headnode ); // remap clipnodes to local indexes
 }
 
 static qboolean Mod_LoadLitfile( model_t *mod, const char *ext, size_t expected_size, color24 **out, size_t *outsize )
