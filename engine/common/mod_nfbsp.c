@@ -101,74 +101,6 @@ static void nf_cstr( const unsigned char *p, int maxlen, char *out, int outsz )
 	out[i] = '\0';
 }
 
-// Nightfire draws wld_glass surfaces blended with their texture alpha (e.g.
-// osato/glass_01: alpha 0..119, a diagonal reflection streak), whatever the
-// entity's rendermode; level designers gave glass brush entities rendermode 2
-// or 4. GoldSrc rendermode 4 (kRenderTransAlpha) alpha-tests instead, which
-// cuts the glass into an opaque and an invisible half. Rewrite "rendermode"
-// "4" to "2" (kRenderTransTexture: texture alpha x renderamt, sorted) on brush
-// entities ("model" "*N") whose model has glass surfaces. Same length, so the
-// entity text is patched in place. Returns the number of entities changed.
-static int nf_glass_rendermode( char *ents, int elen, const unsigned char *model_glass, int nmodels )
-{
-	int changed = 0;
-	int pos = 0;
-
-	while( pos < elen )
-	{
-		char *model = NULL, *rendermode = NULL;
-		int nstr = 0;
-
-		while( pos < elen && ents[pos] != '{' )
-			pos++;
-		if( pos >= elen )
-			break;
-		pos++;
-
-		// alternating "key" "value" strings up to the closing brace
-		while( pos < elen && ents[pos] != '}' )
-		{
-			if( ents[pos] != '"' )
-			{
-				pos++;
-				continue;
-			}
-
-			char *s = ents + pos + 1;
-			int len = 0;
-			while( pos + 1 + len < elen && s[len] != '"' )
-				len++;
-			pos += len + 2;
-
-			if( nstr++ & 1 )
-				continue; // a value; keys are handled below
-
-			// the value string follows the key
-			while( pos < elen && ents[pos] != '"' && ents[pos] != '}' )
-				pos++;
-			if( pos >= elen || ents[pos] != '"' )
-				break;
-
-			if( len == 5 && !strncmp( s, "model", 5 ))
-				model = ents + pos + 1;
-			else if( len == 10 && !strncmp( s, "rendermode", 10 ))
-				rendermode = ents + pos + 1;
-		}
-
-		if( model && rendermode && model[0] == '*' && rendermode[0] == '4' && rendermode[1] == '"' )
-		{
-			int mi = atoi( model + 1 );
-			if( mi > 0 && mi < nmodels && model_glass[mi] )
-			{
-				rendermode[0] = '2';
-				changed++;
-			}
-		}
-	}
-
-	return changed;
-}
-
 // ------------------------------------------------------------------ growable buffer
 typedef struct { unsigned char *d; size_t len, cap; } buf_t;
 
@@ -198,6 +130,137 @@ static void buf_i16( buf_t *b, short v ) { buf_bytes( b, &v, 2 ); }
 static void buf_u16( buf_t *b, unsigned short v ) { buf_bytes( b, &v, 2 ); }
 
 static void buf_patch_i32( buf_t *b, size_t at, int v ) { memcpy( b->d + at, &v, 4 ); }
+
+// ------------------------------------------------------------------ brush-entity render modes
+// Nightfire picks how a surface is drawn from its material, GoldSrc from the
+// brush entity's rendermode, and the level designers' rendermodes do not
+// match the GoldSrc meaning:
+// * wld_glass (e.g. osato/glass_01: alpha 0..119, a diagonal reflection
+//   streak) is blended, but glass entities carry rendermode 2 or 4; GoldSrc 4
+//   (kRenderTransAlpha) alpha-tests and cuts the pane into an opaque and an
+//   invisible half -> 4 becomes 2 (kRenderTransTexture: texture alpha x
+//   renderamt, sorted).
+// * wld_masked (fences, grates, blinds, ladders) is alpha-tested, but some
+//   entities have no rendermode (the m5 elevator cage, func_train *166), which
+//   GoldSrc draws opaque -> rendermode 0/absent becomes 4, and renderamt
+//   0/absent becomes 255 (a non-normal rendermode with renderamt 0 is not
+//   drawn at all). The other textures of those entities have no alpha
+//   channel, so the alpha test leaves them intact.
+enum { NF_RM_KEEP = 0, NF_RM_MASKED = 1, NF_RM_GLASS = 2 };
+
+typedef struct
+{
+	int start, len; // value span (between the quotes), len < 0 = key absent
+} nf_kv_t;
+
+static int nf_kv_is( const char *ents, nf_kv_t v, const char *s )
+{
+	return v.len == (int)strlen( s ) && !strncmp( ents + v.start, s, v.len );
+}
+
+// Copy the entity text to out, fixing the rendermode/renderamt of brush
+// entities ("model" "*N") per model_kind[N]. Returns the number changed.
+static int nf_fix_rendermodes( const char *ents, int elen, const unsigned char *model_kind, int nmodels, buf_t *out )
+{
+	int changed = 0;
+	int pos = 0, copied = 0;
+
+	while( pos < elen )
+	{
+		nf_kv_t model = { 0, -1 }, rendermode = { 0, -1 }, renderamt = { 0, -1 };
+		int nstr = 0, keylen = 0;
+		const char *key = NULL;
+
+		while( pos < elen && ents[pos] != '{' )
+			pos++;
+		if( pos >= elen )
+			break;
+		pos++;
+
+		// alternating "key" "value" strings up to the closing brace
+		while( pos < elen && ents[pos] != '}' )
+		{
+			if( ents[pos] != '"' )
+			{
+				pos++;
+				continue;
+			}
+
+			int start = pos + 1, len = 0;
+			while( start + len < elen && ents[start + len] != '"' )
+				len++;
+			pos = start + len + 1;
+
+			if(!( nstr++ & 1 ))
+			{
+				key = ents + start;
+				keylen = len;
+				continue;
+			}
+
+			nf_kv_t v = { start, len };
+			if( keylen == 5 && !strncmp( key, "model", 5 ))
+				model = v;
+			else if( keylen == 10 && !strncmp( key, "rendermode", 10 ))
+				rendermode = v;
+			else if( keylen == 9 && !strncmp( key, "renderamt", 9 ))
+				renderamt = v;
+		}
+		if( pos >= elen )
+			break;
+
+		int mi = ( model.len > 1 && ents[model.start] == '*' ) ? atoi( ents + model.start + 1 ) : 0;
+		int kind = ( mi > 0 && mi < nmodels ) ? model_kind[mi] : NF_RM_KEEP;
+		const char *new_rm = NULL, *new_amt = NULL;
+
+		if( kind == NF_RM_GLASS && nf_kv_is( ents, rendermode, "4" ))
+			new_rm = "2";
+		else if( kind == NF_RM_MASKED && ( rendermode.len < 0 || nf_kv_is( ents, rendermode, "0" )))
+		{
+			new_rm = "4";
+			if( renderamt.len < 0 || nf_kv_is( ents, renderamt, "0" ))
+				new_amt = "255";
+		}
+		if( !new_rm )
+			continue;
+
+		// replace present values in text order, append absent keys before '}'
+		nf_kv_t present[2];
+		const char *value[2];
+		int np = 0;
+		if( rendermode.len >= 0 ) { present[np] = rendermode; value[np++] = new_rm; }
+		if( new_amt && renderamt.len >= 0 ) { present[np] = renderamt; value[np++] = new_amt; }
+		if( np == 2 && present[1].start < present[0].start )
+		{
+			nf_kv_t t = present[0]; present[0] = present[1]; present[1] = t;
+			const char *s = value[0]; value[0] = value[1]; value[1] = s;
+		}
+		for( int i = 0; i < np; i++ )
+		{
+			buf_bytes( out, ents + copied, present[i].start - copied );
+			buf_bytes( out, value[i], strlen( value[i] ));
+			copied = present[i].start + present[i].len;
+		}
+		buf_bytes( out, ents + copied, pos - copied );
+		copied = pos;
+		if( rendermode.len < 0 )
+		{
+			buf_bytes( out, "\"rendermode\" \"", 14 );
+			buf_bytes( out, new_rm, strlen( new_rm ));
+			buf_bytes( out, "\"\n", 2 );
+		}
+		if( new_amt && renderamt.len < 0 )
+		{
+			buf_bytes( out, "\"renderamt\" \"", 13 );
+			buf_bytes( out, new_amt, strlen( new_amt ));
+			buf_bytes( out, "\"\n", 2 );
+		}
+		changed++;
+	}
+	buf_bytes( out, ents + copied, elen - copied );
+
+	return changed;
+}
 
 // Reverse a contiguous block of 12-byte clipnodes [start,end) in place and
 // remap child references that point inside the block. Xash3D sets
@@ -2447,11 +2510,11 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 		size_t clen = 0;
 		char hdr[32];
 		buf_t key = { 0 };
-		unsigned char *ents_copy = (unsigned char *)malloc( elen ? elen : 1 );
-		unsigned char *model_glass = (unsigned char *)calloc( nmodels ? nmodels : 1, 1 );
+		buf_t fixed = { 0 };
+		unsigned char *model_kind = (unsigned char *)calloc( nmodels ? nmodels : 1, 1 );
 		const unsigned char *ents = L[0];
 
-		for( int mi = 1; mi < nmodels && ents_copy && model_glass; mi++ )
+		for( int mi = 1; mi < nmodels && model_kind; mi++ )
 		{
 			int msi = rd_i32( L[14] + mi * 56 + 48 );
 			int msc = rd_i32( L[14] + mi * 56 + 52 );
@@ -2466,18 +2529,23 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 				nf_cstr( L[3] + matidx * 64, 64, mat, sizeof( mat ));
 				if( strstr( mat, "glass" ))
 				{
-					model_glass[mi] = 1;
+					model_kind[mi] = NF_RM_GLASS;
 					break;
 				}
+				if( strstr( mat, "masked" ))
+					model_kind[mi] = NF_RM_MASKED;
 			}
 		}
-		if( ents_copy && model_glass )
+		if( model_kind )
 		{
-			memcpy( ents_copy, L[0], elen );
-			nf_glass_rendermode( (char *)ents_copy, elen, model_glass, nmodels );
-			ents = ents_copy;
+			nf_fix_rendermodes( (const char *)L[0], elen, model_kind, nmodels, &fixed );
+			if( fixed.d )
+			{
+				ents = fixed.d;
+				elen = (int)fixed.len;
+			}
 		}
-		free( model_glass );
+		free( model_kind );
 
 		while( cut < elen && ents[cut] != '}' )
 			cut++;
@@ -2512,7 +2580,7 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 		buf_bytes( &lumps[0], key.d, key.len );
 		buf_bytes( &lumps[0], ents + cut, elen - cut );
 		free( key.d );
-		free( ents_copy );
+		free( fixed.d );
 	}
 	// planes
 	for( int i = 0; i < nplanes; i++ )
