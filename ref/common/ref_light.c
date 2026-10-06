@@ -213,6 +213,135 @@ void R_PushDlightsForBmodel( model_t *model, int framecount, const matrix4x4 obj
 static vec3_t	g_trace_lightspot;
 static vec3_t	g_trace_lightvec;
 static float	g_trace_fraction;
+static mleaf_t	*g_trace_lastleaf;	// last non-solid leaf the trace passed through
+
+/*
+=================
+R_SurfaceOnPlane
+
+GoldSrc compilers put a node's surfaces on the node's plane; James Bond 007:
+Nightfire (PC) maps file each surface under the lowest common ancestor of the
+leaves listing it, which is usually not its plane (Nightfire also stores
+planes in flipped pairs, so compare geometrically)
+=================
+*/
+static qboolean R_SurfaceOnPlane( const msurface_t *surf, const mplane_t *plane )
+{
+	if( surf->plane == plane )
+		return true;
+
+	float d = DotProduct( surf->plane->normal, plane->normal );
+
+	if( d > 0.999f )
+		return fabs( surf->plane->dist - plane->dist ) < 0.1f;
+	if( d < -0.999f )
+		return fabs( surf->plane->dist + plane->dist ) < 0.1f;
+
+	return false;
+}
+
+/*
+=================
+R_LightPointSurface
+
+sample the lightmap of surf at mid if mid lies within its lightmap extents
+=================
+*/
+static qboolean R_LightPointSurface( const msurface_t *surf, float midf, colorVec *cv, const vec3_t mid )
+{
+	const mextrasurf_t *info = surf->info;
+
+	if( FBitSet( surf->flags, SURF_DRAWTILED ))
+		return false;	// no lightmaps
+
+	float s = DotProduct( mid, info->lmvecs[0] ) + info->lmvecs[0][3];
+	float t = DotProduct( mid, info->lmvecs[1] ) + info->lmvecs[1][3];
+
+	if( s < info->lightmapmins[0] || t < info->lightmapmins[1] )
+		return false;
+
+	float ds = s - info->lightmapmins[0];
+	float dt = t - info->lightmapmins[1];
+
+	if ( ds > info->lightextents[0] || dt > info->lightextents[1] )
+		return false;
+
+	cv->r = cv->g = cv->b = cv->a = 0;
+
+	if( !surf->samples )
+		return true;
+
+	int sample_size = gEngfuncs.Mod_SampleSizeForFace( surf );
+	int smax = (info->lightextents[0] / sample_size) + 1;
+	int tmax = (info->lightextents[1] / sample_size) + 1;
+
+	ds /= sample_size;
+	dt /= sample_size;
+
+	g_trace_fraction = midf;
+
+	const color24 *lm = surf->samples + Q_rint( dt ) * smax + Q_rint( ds );
+	const color24 *dm = NULL;
+	matrix3x4 tbn = { 0 };
+
+	if( surf->info->deluxemap )
+	{
+		vec3_t	faceNormal;
+
+		dm = surf->info->deluxemap + Q_rint( dt ) * smax + Q_rint( ds );
+
+		if( FBitSet( surf->flags, SURF_PLANEBACK ))
+			VectorNegate( surf->plane->normal, faceNormal );
+		else VectorCopy( surf->plane->normal, faceNormal );
+
+		// compute face TBN
+#if 1
+		Vector4Set( tbn[0], surf->info->lmvecs[0][0], surf->info->lmvecs[0][1], surf->info->lmvecs[0][2], 0.0f );
+		Vector4Set( tbn[1], -surf->info->lmvecs[1][0], -surf->info->lmvecs[1][1], -surf->info->lmvecs[1][2], 0.0f );
+		Vector4Set( tbn[2], faceNormal[0], faceNormal[1], faceNormal[2], 0.0f );
+#else
+		Vector4Set( tbn[0], surf->info->lmvecs[0][0], -surf->info->lmvecs[1][0], faceNormal[0], 0.0f );
+		Vector4Set( tbn[1], surf->info->lmvecs[0][1], -surf->info->lmvecs[1][1], faceNormal[1], 0.0f );
+		Vector4Set( tbn[2], surf->info->lmvecs[0][2], -surf->info->lmvecs[1][2], faceNormal[2], 0.0f );
+#endif
+		VectorNormalize( tbn[0] );
+		VectorNormalize( tbn[1] );
+		VectorNormalize( tbn[2] );
+	}
+
+	int size = smax * tmax;
+
+	for( int map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
+	{
+		uint	scale = g_lightstylevalue[surf->styles[map]];
+
+		cv->r += lm->r * scale;
+		cv->g += lm->g * scale;
+		cv->b += lm->b * scale;
+
+		lm += size; // skip to next lightmap
+
+		if( dm != NULL )
+		{
+			const float f = (1.0f / 128.0f);
+			vec3_t srcNormal =
+			{
+				((float)dm->r - 128.0f) * f,
+				((float)dm->g - 128.0f) * f,
+				((float)dm->b - 128.0f) * f,
+			};
+			vec3_t lightNormal;
+
+
+			Matrix3x4_VectorIRotate( tbn, srcNormal, lightNormal );		// turn to world space
+			VectorScale( lightNormal, (float)scale * -1.0f, lightNormal );	// turn direction from light
+			VectorAdd( g_trace_lightvec, lightNormal, g_trace_lightvec );
+			dm += size; // skip to next deluxmap
+		}
+	}
+
+	return true;
+}
 
 /*
 =================
@@ -225,6 +354,9 @@ start:
 	// didn't hit anything
 	if( !node || node->contents < 0 )
 	{
+		if( node && node->contents != CONTENTS_SOLID )
+			g_trace_lastleaf = (mleaf_t *)node;
+
 		cv->r = cv->g = cv->b = cv->a = 0;
 		return false;
 	}
@@ -266,98 +398,30 @@ start:
 	for( int i = 0; i < numsurfaces; i++ )
 	{
 		const msurface_t *surf = &model->surfaces[firstsurface + i];
-		const mextrasurf_t *info = surf->info;
 
-		if( FBitSet( surf->flags, SURF_DRAWTILED ))
-			continue;	// no lightmaps
-
-		float s = DotProduct( mid, info->lmvecs[0] ) + info->lmvecs[0][3];
-		float t = DotProduct( mid, info->lmvecs[1] ) + info->lmvecs[1][3];
-
-		if( s < info->lightmapmins[0] || t < info->lightmapmins[1] )
+		// a surface off the node plane cannot be hit at mid (Nightfire)
+		if( !R_SurfaceOnPlane( surf, node->plane ))
 			continue;
 
-		float ds = s - info->lightmapmins[0];
-		float dt = t - info->lightmapmins[1];
-
-		if ( ds > info->lightextents[0] || dt > info->lightextents[1] )
-			continue;
-
-		cv->r = cv->g = cv->b = cv->a = 0;
-
-		if( !surf->samples )
+		if( R_LightPointSurface( surf, midf, cv, mid ))
 			return true;
+	}
 
-		int sample_size = gEngfuncs.Mod_SampleSizeForFace( surf );
-		int smax = (info->lightextents[0] / sample_size) + 1;
-		int tmax = (info->lightextents[1] / sample_size) + 1;
+	// Nightfire: the surface hit at mid is listed by the leaf the trace just
+	// left, not filed under this node
+	if( g_trace_lastleaf && model->leafs && (mleaf_t *)g_trace_lastleaf >= model->leafs
+		&& (mleaf_t *)g_trace_lastleaf < model->leafs + model->numleafs + 1 )
+	{
+		msurface_t **mark = g_trace_lastleaf->firstmarksurface;
 
-		ds /= sample_size;
-		dt /= sample_size;
-
-		g_trace_fraction = midf;
-
-		const color24 *lm = surf->samples + Q_rint( dt ) * smax + Q_rint( ds );
-		const color24 *dm = NULL;
-		matrix3x4 tbn = { 0 };
-
-		if( surf->info->deluxemap )
+		for( int i = 0; i < g_trace_lastleaf->nummarksurfaces; i++ )
 		{
-			vec3_t	faceNormal;
+			if( !R_SurfaceOnPlane( mark[i], node->plane ))
+				continue;
 
-			dm = surf->info->deluxemap + Q_rint( dt ) * smax + Q_rint( ds );
-
-			if( FBitSet( surf->flags, SURF_PLANEBACK ))
-				VectorNegate( surf->plane->normal, faceNormal );
-			else VectorCopy( surf->plane->normal, faceNormal );
-
-			// compute face TBN
-#if 1
-			Vector4Set( tbn[0], surf->info->lmvecs[0][0], surf->info->lmvecs[0][1], surf->info->lmvecs[0][2], 0.0f );
-			Vector4Set( tbn[1], -surf->info->lmvecs[1][0], -surf->info->lmvecs[1][1], -surf->info->lmvecs[1][2], 0.0f );
-			Vector4Set( tbn[2], faceNormal[0], faceNormal[1], faceNormal[2], 0.0f );
-#else
-			Vector4Set( tbn[0], surf->info->lmvecs[0][0], -surf->info->lmvecs[1][0], faceNormal[0], 0.0f );
-			Vector4Set( tbn[1], surf->info->lmvecs[0][1], -surf->info->lmvecs[1][1], faceNormal[1], 0.0f );
-			Vector4Set( tbn[2], surf->info->lmvecs[0][2], -surf->info->lmvecs[1][2], faceNormal[2], 0.0f );
-#endif
-			VectorNormalize( tbn[0] );
-			VectorNormalize( tbn[1] );
-			VectorNormalize( tbn[2] );
+			if( R_LightPointSurface( mark[i], midf, cv, mid ))
+				return true;
 		}
-
-		int size = smax * tmax;
-
-		for( int map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
-		{
-			uint	scale = g_lightstylevalue[surf->styles[map]];
-
-			cv->r += lm->r * scale;
-			cv->g += lm->g * scale;
-			cv->b += lm->b * scale;
-
-			lm += size; // skip to next lightmap
-
-			if( dm != NULL )
-			{
-				const float f = (1.0f / 128.0f);
-				vec3_t srcNormal =
-				{
-					((float)dm->r - 128.0f) * f,
-					((float)dm->g - 128.0f) * f,
-					((float)dm->b - 128.0f) * f,
-				};
-				vec3_t lightNormal;
-
-
-				Matrix3x4_VectorIRotate( tbn, srcNormal, lightNormal );		// turn to world space
-				VectorScale( lightNormal, (float)scale * -1.0f, lightNormal );	// turn direction from light
-				VectorAdd( g_trace_lightvec, lightNormal, g_trace_lightvec );
-				dm += size; // skip to next deluxmap
-			}
-		}
-
-		return true;
 	}
 
 	// go down back side
@@ -417,6 +481,7 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
 		VectorClear( g_trace_lightspot );
 		VectorClear( g_trace_lightvec );
 		g_trace_fraction = 1.0f;
+		g_trace_lastleaf = NULL;
 
 		colorVec cv;
 		if( !R_RecursiveLightPoint( pe->model, pnodes, 0.0f, 1.0f, &cv, start_l, end_l ))
