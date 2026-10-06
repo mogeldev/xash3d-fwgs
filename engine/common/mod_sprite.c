@@ -49,17 +49,38 @@ static int NF_NightfireSpriteFrame( const char *name, int *w, int *h, unsigned c
 		return 0;
 	}
 
-	if( img->depth == 4 )
+	// rgbdata_t.depth is the 3D-texture depth (1 for a plain image), not the
+	// bytes per pixel: pick the conversion by pixel format.
+	if( img->type == PF_RGBA_32 || img->type == PF_BGRA_32 )
 	{
 		memcpy( out, img->buffer, (size_t)pixels * 4 );
+		if( img->type == PF_BGRA_32 )
+		{
+			for( i = 0; i < pixels; i++ )
+			{
+				byte t = out[i * 4 + 0];
+				out[i * 4 + 0] = out[i * 4 + 2];
+				out[i * 4 + 2] = t;
+			}
+		}
 	}
-	else if( img->depth == 3 )
+	else if( img->type == PF_RGB_24 || img->type == PF_BGR_24 )
+	{
+		const int r = ( img->type == PF_RGB_24 ) ? 0 : 2;
+
+		for( i = 0; i < pixels; i++ )
+		{
+			out[i * 4 + 0] = img->buffer[i * 3 + r];
+			out[i * 4 + 1] = img->buffer[i * 3 + 1];
+			out[i * 4 + 2] = img->buffer[i * 3 + 2 - r];
+			out[i * 4 + 3] = 255;
+		}
+	}
+	else if( img->type == PF_LUMINANCE )
 	{
 		for( i = 0; i < pixels; i++ )
 		{
-			out[i * 4 + 0] = img->buffer[i * 3 + 0];
-			out[i * 4 + 1] = img->buffer[i * 3 + 1];
-			out[i * 4 + 2] = img->buffer[i * 3 + 2];
+			out[i * 4 + 0] = out[i * 4 + 1] = out[i * 4 + 2] = img->buffer[i];
 			out[i * 4 + 3] = 255;
 		}
 	}
