@@ -979,6 +979,7 @@ void R_RenderScene( void )
 	if( FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
 		R_AnimateRipples();
 
+	R_DrawNightfireSky();
 	R_CheckGLFog();
 	R_DrawWorld();
 	R_CheckFog();

@@ -465,10 +465,17 @@ void R_StudioLerpMovement( cl_entity_t *e, double time, vec3_t origin, vec3_t an
 struct mstudiotex_s *R_StudioGetTexture( cl_entity_t *e );
 int R_GetEntityRenderMode( cl_entity_t *ent );
 void R_DrawStudioModel( cl_entity_t *e );
+void R_DrawStudioModelBuiltin( cl_entity_t *e );
 player_info_t *pfnPlayerInfo( int index );
 float R_StudioEstimateFrame( cl_entity_t *e, mstudioseqdesc_t *pseqdesc, double time );
 void R_StudioLerpMovement( cl_entity_t *e, double time, vec3_t origin, vec3_t angles );
 void R_StudioResetPlayerModels( void );
+
+//
+// gl_nfsky.c
+//
+void R_NightfireSkyNewMap( void );
+void R_DrawNightfireSky( void );
 qboolean R_StudioFillAPI( struct engine_studio_api_s *api, struct r_studio_interface_s *pDefaultDraw );
 void R_StudioSetDrawInterface( struct r_studio_interface_s *pDraw );
 void Mod_StudioLoadTextures( model_t *mod, void *data );

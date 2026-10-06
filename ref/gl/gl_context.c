@@ -401,6 +401,8 @@ static void R_NewMap( void )
 
 	R_StudioResetPlayerModels();
 
+	R_NightfireSkyNewMap();
+
 	// clear out efrags in case the level hasn't been reloaded
 	for( int i = 0; i < WORLDMODEL->numleafs; i++ )
 		WORLDMODEL->leafs[i+1].efrags = NULL;

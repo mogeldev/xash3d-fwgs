@@ -3284,6 +3284,29 @@ void R_DrawStudioModel( cl_entity_t *e )
 
 /*
 =================
+R_DrawStudioModelBuiltin
+
+draw a studio entity with the engine's own studio renderer, bypassing the
+game library's StudioModelRenderer (used for the Nightfire sky dome)
+=================
+*/
+void R_DrawStudioModelBuiltin( cl_entity_t *e )
+{
+	cl_entity_t *oldent = RI.currententity;
+	model_t *oldmod = RI.currentmodel;
+
+	RI.currententity = e;
+	RI.currentmodel = e->model;
+
+	R_StudioSetupTimings();
+	R_StudioDrawModel( STUDIO_RENDER );
+
+	RI.currententity = oldent;
+	RI.currentmodel = oldmod;
+}
+
+/*
+=================
 R_RunViewmodelEvents
 =================
 */
