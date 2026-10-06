@@ -292,12 +292,21 @@ typedef struct {
 } outmodel_t;
 
 // ---------------------------------------------------------------------------
-// Expanded world clip hulls: fragment-based solid BSP.
-// NOTE: correct but not compact enough to ship yet - without a qbsp/hlcsg-style
-// brush merge (interior-face removal) it over-splits badly (dm_power hull 1
-// alone needs >32000 clipnodes). Disabled by default; build with
-// -DNFBSP_WORLD_HULLS for experiments. See docs/world-clip-hull.md.
+// Expanded world clip hulls: solid BSPs over the hlcsg-CSG-merged, per-hull
+// expanded world brushes (nfw_*, see docs/world-clip-hull.md). On by default;
+// build with -DNFBSP_NO_WORLD_HULLS to fall back to the unexpanded render-tree
+// copy. Without NFW_USE_CSG the older fragment builder (nfh_*) is used, which
+// over-splits badly (kept for reference only).
 // ---------------------------------------------------------------------------
+#ifndef NFBSP_NO_WORLD_HULLS
+#ifndef NFBSP_WORLD_HULLS
+#define NFBSP_WORLD_HULLS
+#endif
+#ifndef NFW_USE_CSG
+#define NFW_USE_CSG
+#endif
+#endif
+
 #ifdef NFBSP_WORLD_HULLS
 #define NFH_EPS      0.05f
 #define NFH_MAXV     256
@@ -510,6 +519,12 @@ static int nfh_rec( nfh_ctx_t *ctx, nfh_plane_t *cell, int nc, nfh_frag_t *frags
 // no boundary face ever crosses a leaf -> the union point test is exact.
 // ---------------------------------------------------------------------------
 #define NFW_MAXPTS 64
+#ifndef NFW_SAMPLE_FACES
+#define NFW_SAMPLE_FACES  256	// nodes with more faces sample their split candidates
+#endif
+#ifndef NFW_SAMPLE_PLANES
+#define NFW_SAMPLE_PLANES 64	// ... about this many of them
+#endif
 
 // Canonical (undirected) geometric plane id: +P and -P share one id so a
 // geometric plane is a single candidate (qbsp surface/onnode).
@@ -971,7 +986,14 @@ static int nfw_rec( nfw_ctx_t *ctx, nfh_plane_t *cell, int nc, nfw_list_t *faces
 	if( faces->n == 0 )
 		return nfw_point_solid( ctx, cc ) ? -2 : -1;
 
-	for( int i = 0; i < faces->n; i++ )
+	// Counting the crossings of one candidate plane is O(faces), so trying
+	// every distinct plane makes a node O(planes * faces) - minutes on the
+	// larger maps. Large nodes only try an evenly spaced sample of their faces'
+	// planes. Any plane is a valid split (leaves are still decided by the exact
+	// point test), the sample only costs some tree quality.
+	const int stride = faces->n > NFW_SAMPLE_FACES ? faces->n / NFW_SAMPLE_PLANES : 1;
+
+	for( int i = 0; i < faces->n; i += stride )
 	{
 		nfw_face_t *f = faces->f[i];
 		int cross = 0, ax;
@@ -2480,7 +2502,7 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	lumps[8] = lighting;
 	// clipnodes (hulls 1-3): Nightfire has no clipnode lump (its collision is
 	// surface-based). Build the world's three hulls as expanded solid BSPs over
-	// the world brushes (see nfh_build_world / docs/world-clip-hull.md).
+	// the world brushes (see nfw_build_world / docs/world-clip-hull.md).
 	{
 		int world_ok = 0;
 #ifdef NFBSP_WORLD_HULLS
