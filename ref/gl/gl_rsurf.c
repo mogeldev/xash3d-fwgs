@@ -739,7 +739,7 @@ static void R_BuildLightMap( const msurface_t *surf, byte *restrict dest, int st
 	const int size = smax * tmax;
 
 	if( gl_overbright.value )
-		lightscale = ( R_HasEnabledVBO() && !r_vbo_overbrightmode.value) ? 171 : 256;
+		lightscale = ( R_HasEnabledVBO() && !r_vbo_overbrightmode.value) ? (int)( 256.0f * R_LightmapOverbrightScale() + 0.5f ) : 256;
 	else
 		lightscale = ( pow( 2.0f, 1.0f / v_lightgamma->value ) * 256 ) + 0.5;
 
@@ -1172,7 +1172,10 @@ static void R_BlendLightmaps( void )
 		{
 			pglBlendFunc( GL_DST_COLOR, GL_SRC_COLOR );
 			if(!( R_HasEnabledVBO() && !r_vbo_overbrightmode.value ))
-				pglColor4f( 128.0f / 192.0f, 128.0f / 192.0f, 128.0f / 192.0f, 1.0f );
+			{
+				const float s = R_LightmapOverbrightScale();
+				pglColor4f( s, s, s, 1.0f );
+			}
 		}
 		else
 		{
@@ -2503,7 +2506,8 @@ static void R_SetLightmap( void )
 	{
 		if( r_vbo_overbrightmode.value == 1 )
 		{
-			GLfloat color[4] = { 128.0f / 192.0f, 128.0f / 192.0f, 128.0f / 192.0f, 1.0f };
+			const GLfloat s = R_LightmapOverbrightScale();
+			GLfloat color[4] = { s, s, s, 1.0f };
 			int tmu = glState.activeTMU;
 			GL_SelectTexture( tmu - 1 );
 			pglTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE_ARB );

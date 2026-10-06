@@ -472,9 +472,10 @@ void R_StudioLerpMovement( cl_entity_t *e, double time, vec3_t origin, vec3_t an
 void R_StudioResetPlayerModels( void );
 
 //
-// gl_nfsky.c
+// gl_nfworld.c
 //
-void R_NightfireSkyNewMap( void );
+void R_NightfireNewMap( void );
+float R_LightmapOverbrightScale( void );
 void R_DrawNightfireSky( void );
 qboolean R_StudioFillAPI( struct engine_studio_api_s *api, struct r_studio_interface_s *pDefaultDraw );
 void R_StudioSetDrawInterface( struct r_studio_interface_s *pDraw );
