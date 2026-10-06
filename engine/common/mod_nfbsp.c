@@ -75,11 +75,17 @@ static float rd_f32( const unsigned char *p )
 	return f;
 }
 
+// GoldSrc plane type: 0-2 (PLANE_X/Y/Z) only for a *positive* unit axis normal
+// - the engine's fast paths compute p[type] - dist for those - otherwise
+// 3 + the dominant axis. Typing a negative axial normal (e.g. 0,0,-1) as
+// axial puts every point on the wrong side of the plane in traces, hull
+// point tests and world-node culling.
 static int nf_plane_type( float nx, float ny, float nz )
 {
 	float ax = fabsf( nx ), ay = fabsf( ny ), az = fabsf( nz );
 	int i = ( ax >= ay && ax >= az ) ? 0 : ( ay >= az ? 1 : 2 );
-	if( ax + ay + az > 0.9999f && ax + ay + az < 1.0001f )
+	const float c = ( i == 0 ) ? nx : ( i == 1 ) ? ny : nz;
+	if( c > 0.9999f )
 		return i;
 	return i + 3;
 }
@@ -1853,7 +1859,10 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 				ny += ( a[2] - b[2] ) * ( a[0] + b[0] );
 				nz += ( a[0] - b[0] ) * ( a[1] + b[1] );
 			}
-			side = ( nx * pnx + ny * pny + nz * pnz ) >= 0 ? 0 : 1;
+			// Nightfire (like Quake/GoldSrc) winds a face clockwise seen from
+			// its front, so the Newell normal above points *behind* the face:
+			// the face is on the plane's front side when they oppose.
+			side = ( nx * pnx + ny * pny + nz * pnz ) <= 0 ? 0 : 1;
 
 			{
 				nfs_face_ctx_t fc;
@@ -1903,14 +1912,110 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 			int *ncount = (int *)calloc( nnodes, sizeof( int ));
 			outface_t *tmp = (outface_t *)malloc( sizeof( outface_t ) * W );
 
+			// Xash draws a node's faces only while traversing that node, which
+			// happens when a visible leaf lies below it. So file each face under
+			// the lowest common ancestor of the leaves that list its Nightfire
+			// surface: whenever one of them is visible, the node is traversed.
+			int *nparent = (int *)malloc( sizeof( int ) * nnodes );
+			int *ndepth  = (int *)malloc( sizeof( int ) * nnodes );
+			int *lparent = (int *)malloc( sizeof( int ) * ( nleaves > 0 ? nleaves : 1 ));
+			int *slca    = (int *)malloc( sizeof( int ) * ( nsurfaces > 0 ? nsurfaces : 1 ));
+			int *stack   = (int *)malloc( sizeof( int ) * nnodes );
+
+			if( nparent && ndepth && lparent && slca && stack )
+			{
+				int sp = 0;
+
+				for( int i = 0; i < nnodes; i++ ) { nparent[i] = -1; ndepth[i] = 0; }
+				for( int i = 0; i < nleaves; i++ ) lparent[i] = -1;
+				for( int i = 0; i < nsurfaces; i++ ) slca[i] = -1;
+
+				stack[sp++] = 0;
+				while( sp > 0 )
+				{
+					const int n = stack[--sp];
+					const unsigned char *np = L[8] + n * 36;
+
+					for( int k = 0; k < 2; k++ )
+					{
+						const int c = rd_i32( np + 4 + k * 4 );
+
+						if( c >= 0 && c < nnodes && nparent[c] < 0 && c != 0 )
+						{
+							nparent[c] = n;
+							ndepth[c] = ndepth[n] + 1;
+							stack[sp++] = c;
+						}
+						else if( c < 0 && -c - 1 < nleaves )
+							lparent[-c - 1] = n;
+					}
+				}
+
+				for( int li = 0; li < nleaves_out; li++ )
+				{
+					const unsigned char *lp = L[11] + li * 48;
+					const int lsi = rd_i32( lp + 32 ), lsc = rd_i32( lp + 36 );
+					int n = lparent[li];
+
+					if( n < 0 || lsi < 0 || lsc <= 0 )
+						continue;
+
+					for( int k = 0; k < lsc; k++ )
+					{
+						const int s = rd_i32( L[12] + (size_t)( lsi + k ) * 4 );
+						int a, b;
+
+						if( s < 0 || s >= nsurfaces )
+							continue;
+						if( slca[s] < 0 ) { slca[s] = n; continue; }
+
+						// lowest common ancestor of slca[s] and n
+						a = slca[s]; b = n;
+						while( a != b && a >= 0 && b >= 0 )
+						{
+							if( ndepth[a] >= ndepth[b] ) a = nparent[a];
+							else b = nparent[b];
+						}
+						slca[s] = ( a >= 0 && a == b ) ? a : 0;
+					}
+				}
+			}
+			else { free( slca ); slca = NULL; }
+			free( nparent ); free( ndepth ); free( lparent ); free( stack );
+
 			if( owner && newno && nfirst && ncount && tmp )
 			{
 				for( int fi = 0; fi < W; fi++ )
 				{
-					int e0 = ose[of[fi].firstedge];
-					const float *p = ov + oe0[e0 >= 0 ? e0 : -e0] * 3;
-					float cx = p[0], cy = p[1], cz = p[2];
+					if( slca && of[fi].surface >= 0 && of[fi].surface < nsurfaces && slca[of[fi].surface] >= 0 )
+					{
+						owner[fi] = slca[of[fi].surface];
+						ncount[owner[fi]]++;
+						continue;
+					}
+
+					// Descend with the face centroid (a vertex may lie exactly on
+					// a node plane, which makes the side arbitrary) and stop at the
+					// node whose plane the face lies on. Nightfire stores planes in
+					// pairs (plane and flipped), so the node may use the other one
+					// of the pair: match geometrically, not by index. A face filed
+					// under the wrong subtree is never drawn when that subtree has
+					// no visible leaf.
+					const unsigned char *fpl = L[1] + of[fi].plane * 20;
+					const float fnx = rd_f32( fpl ), fny = rd_f32( fpl + 4 ), fnz = rd_f32( fpl + 8 );
+					float cx = 0.0f, cy = 0.0f, cz = 0.0f;
 					int node = 0, own = 0, guard = 0;
+
+					for( int k = 0; k < of[fi].numedges; k++ )
+					{
+						int e = ose[of[fi].firstedge + k];
+						const float *p = ov + ( e >= 0 ? oe0[e] : oe1[-e] ) * 3;
+						cx += p[0]; cy += p[1]; cz += p[2];
+					}
+					if( of[fi].numedges > 0 )
+					{
+						cx /= of[fi].numedges; cy /= of[fi].numedges; cz /= of[fi].numedges;
+					}
 
 					while( node >= 0 && guard++ < 4096 )
 					{
@@ -1921,7 +2026,12 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 						if( nplane < 0 || nplane >= nplanes ) { own = node; break; }
 
 						const unsigned char *pl = L[1] + nplane * 20;
-						float d = rd_f32( pl ) * cx + rd_f32( pl + 4 ) * cy + rd_f32( pl + 8 ) * cz - rd_f32( pl + 12 );
+						const float nx = rd_f32( pl ), ny = rd_f32( pl + 4 ), nz = rd_f32( pl + 8 );
+						float d = nx * cx + ny * cy + nz * cz - rd_f32( pl + 12 );
+
+						if( fabsf( d ) < 0.1f && fabsf( nx * fnx + ny * fny + nz * fnz ) > 0.999f )
+						{ own = node; break; }	// face lies on this node's plane
+
 						int c = ( d >= 0.0f ) ? rd_i32( np + 4 ) : rd_i32( np + 8 );
 
 						if( c < 0 ) { own = node; break; }   // plane absent from the tree
@@ -1946,7 +2056,7 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 				g_node_first = nfirst; g_node_count = ncount;
 			}
 			else { free( nfirst ); free( ncount ); }
-			free( owner ); free( newno ); free( tmp );
+			free( owner ); free( newno ); free( tmp ); free( slca );
 		}
 
 		// per-surface face lists (new face indices)
