@@ -382,7 +382,7 @@ void R_DrawSpriteModel( cl_entity_t *e )
 		{
 			if( parent->model->type == mod_studio && e->curstate.body > 0 )
 			{
-				int num = bound( 1, e->curstate.body, MAXSTUDIOATTACHMENTS );
+				int num = bound( 1, e->curstate.body, CL_ENTITY_MAX_ATTACHMENTS );
 				VectorCopy( parent->attachment[num-1], origin );
 			}
 			else VectorCopy( parent->origin, origin );

@@ -815,7 +815,7 @@ static qboolean R_BeamComputePoint( int beamEnt, vec3_t pt )
 	}
 
 	// get attachment
-	if( attach > 0 )
+	if( attach > 0 && attach <= CL_ENTITY_MAX_ATTACHMENTS )
 		VectorCopy( ent->attachment[attach - 1], pt );
 	else if( ent->index == ( gp_cl->playernum + 1 ))
 		VectorCopy( gp_cl->simorg, pt );

@@ -1217,7 +1217,8 @@ static void R_StudioCalcAttachments( void )
 	// calculate attachment points
 	mstudioattachment_t *pAtt = (mstudioattachment_t *)((byte *)m_pStudioHeader + m_pStudioHeader->attachmentindex );
 
-	for( int i = 0; i < Q_min( MAXSTUDIOATTACHMENTS, m_pStudioHeader->numattachments ); i++ )
+	// cl_entity_t holds CL_ENTITY_MAX_ATTACHMENTS, the model may have more
+	for( int i = 0; i < Q_min( CL_ENTITY_MAX_ATTACHMENTS, m_pStudioHeader->numattachments ); i++ )
 	{
 		Matrix3x4_VectorTransform( g_studio.lighttransform[pAtt[i].bone], pAtt[i].org, RI.currententity->attachment[i] );
 		VectorSubtract( RI.currententity->attachment[i], RI.currententity->origin, localOrg );
@@ -1304,7 +1305,7 @@ static void R_StudioEntityLight( alight_t *lightinfo )
 		{
 			int att = ( el->key >> 12 ) & 0xF;
 
-			if( att )
+			if( att && att < CL_ENTITY_MAX_ATTACHMENTS )
 				VectorCopy( ent->attachment[att], el->origin );
 			else
 				VectorCopy( ent->origin, el->origin );
@@ -2172,10 +2173,8 @@ static void R_StudioClientEvents( void )
 	// fill attachments with interpolated origin
 	if( m_pStudioHeader->numattachments <= 0 )
 	{
-		Matrix3x4_OriginFromMatrix( g_studio.rotationmatrix, e->attachment[0] );
-		Matrix3x4_OriginFromMatrix( g_studio.rotationmatrix, e->attachment[1] );
-		Matrix3x4_OriginFromMatrix( g_studio.rotationmatrix, e->attachment[2] );
-		Matrix3x4_OriginFromMatrix( g_studio.rotationmatrix, e->attachment[3] );
+		for( int i = 0; i < CL_ENTITY_MAX_ATTACHMENTS; i++ )
+			Matrix3x4_OriginFromMatrix( g_studio.rotationmatrix, e->attachment[i] );
 	}
 
 	if( FBitSet( e->curstate.effects, EF_MUZZLEFLASH ))
@@ -2923,7 +2922,7 @@ void R_RunViewmodelEvents( void )
 	R_StudioSetupTimings();
 
 	vec3_t simorg = Vec3( gp_cl->simorg );
-	for( i = 0; i < 4; i++ )
+	for( i = 0; i < CL_ENTITY_MAX_ATTACHMENTS; i++ )
 		VectorCopy( simorg, RI.currententity->attachment[i] );
 	RI.currentmodel = RI.currententity->model;
 
