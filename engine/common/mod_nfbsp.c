@@ -1141,9 +1141,10 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 	if( !pid || !ctx.used || !ctx.tried || ( nplanes > 0 && ngeom <= 0 ))
 	{ free( pid ); free( ctx.used ); free( ctx.tried ); free( ctx.base.vs ); free( ctx.br ); free( seen ); free( order ); return 0; }
 
-	// Clipnode 0 is the "use the render nodes" sentinel, so a real hull root must
-	// never be 0: reserve it with a dummy clipnode when the lump is empty.
-	if( clips->len == 0 ) { buf_i32( clips, 0 ); buf_i32( clips, 0 ); buf_i32( clips, 0 ); }
+	// Clipnode 0 is where brush models without clip brushes point (headnode 0),
+	// so a real hull root must never be 0: reserve it with an empty dummy
+	// clipnode when the lump is empty.
+	if( clips->len == 0 ) { buf_i32( clips, 0 ); buf_i32( clips, -1 ); buf_i32( clips, -1 ); }
 
 	for( int hull = 1; hull <= 3 && ok; hull++ )
 	{
@@ -2369,23 +2370,58 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	lumps[8] = lighting;
 	// clipnodes (hulls 1-3): Nightfire has no clipnode lump (its collision is
 	// surface-based). Build the world's three hulls as expanded solid BSPs over
-	// the world brushes (see nfh_build_world / docs/world-clip-hull.md); the
-	// previous render-tree copy was unexpanded and is no longer emitted.
+	// the world brushes (see nfh_build_world / docs/world-clip-hull.md).
 	{
+		int world_ok = 0;
 #ifdef NFBSP_WORLD_HULLS
 		int nbrushes_w = llen[15] / 12;
 
-		if( !nfw_build_world( L, nleaves, nbrushes_w, llen[1] / 20, &lumps[9], &lumps[1], om[0].headnode ))
-		{
-			om[0].headnode[1] = 0;
-			om[0].headnode[2] = 0;
-			om[0].headnode[3] = 0;
-		}
-#else
-		om[0].headnode[1] = 0;
-		om[0].headnode[2] = 0;
-		om[0].headnode[3] = 0;
+		world_ok = nfw_build_world( L, nleaves, nbrushes_w, llen[1] / 20, &lumps[9], &lumps[1], om[0].headnode );
 #endif
+		if( !world_ok )
+		{
+			// Fallback: FWGS takes a hull's headnode literally as the root
+			// clipnode (headnode 0 is clipnode 0, not "use the render nodes"),
+			// so without the expanded hulls the player would collide against
+			// whatever tree sits at index 0. Emit an unexpanded copy of the
+			// render tree instead: collision is then a point test against the
+			// world geometry (the player sinks into floors/walls by its hull
+			// extents), but it is solid. Index 0 stays an empty dummy so a
+			// brush model with no clip brushes (headnode 0) is non-solid.
+			int start;
+
+			if( lumps[9].len == 0 )
+			{
+				buf_i32( &lumps[9], 0 );
+				buf_i32( &lumps[9], -1 );	// CONTENTS_EMPTY
+				buf_i32( &lumps[9], -1 );
+			}
+			start = (int)( lumps[9].len / 12 );
+
+			for( int i = 0; i < nnodes; i++ )
+			{
+				const int c[2] = { on[i].c0, on[i].c1 };
+
+				buf_i32( &lumps[9], on[i].planenum );
+				for( int j = 0; j < 2; j++ )
+				{
+					int child;
+
+					if( c[j] >= 0 )
+						child = start + c[j];
+					else
+					{
+						const int li = -c[j] - 1;
+						child = ( li >= 0 && li < nleaves_out ) ? ol[li].contents : -1;
+					}
+					buf_i32( &lumps[9], child );
+				}
+			}
+
+			om[0].headnode[1] = nnodes > 0 ? start : 0;
+			om[0].headnode[2] = om[0].headnode[1];
+			om[0].headnode[3] = om[0].headnode[1];
+		}
 	}
 
 	// Brush-model clip trees for hulls 1-3, expanded per hull. A model's solid
