@@ -16,6 +16,7 @@ GNU General Public License for more details.
 #include "common.h"
 #include "xash3d_mathlib.h"
 #include "pm_local.h"
+#include "mod_local.h"
 #include "ref_common.h"
 
 #undef FRAC_EPSILON
@@ -95,6 +96,71 @@ static int PM_SampleMiptex( const msurface_t *surf, const vec3_t point )
 	return contents;
 }
 
+static mleaf_t *pm_trace_lastleaf; // last non-solid leaf a surface trace passed through
+
+/*
+==================
+PM_PointInFacet
+
+is mid inside the edge bevels of surf
+==================
+*/
+static qboolean PM_PointInFacet( const msurface_t *surf, const vec3_t mid )
+{
+	const mfacebevel_t *fb = surf->info->bevel;
+	vec3_t delta;
+
+	if( !fb ) return false;	// ???
+
+	VectorSubtract( mid, fb->origin, delta );
+	if( DotProduct( delta, delta ) >= fb->radius )
+		return false;	// no intersection
+
+	for( int j = 0; j < fb->numedges; j++ )
+	{
+		if( PlaneDiff( mid, &fb->edges[j] ) > FRAC_EPSILON )
+			return false; // outside the bounds of the facet
+	}
+
+	return true;
+}
+
+/*
+==================
+PM_SurfaceAtPoint
+
+the surface the trace hits at mid, which lies on the node plane: one of the
+node's surfaces (GoldSrc), or one listed by the leaf the trace just left
+(Nightfire files surfaces under the lowest common ancestor of their leaves)
+==================
+*/
+static msurface_t *PM_SurfaceAtPoint( model_t *mod, mnode_t *node, const vec3_t mid )
+{
+	int numsurfaces = node_numsurfaces( node, mod );
+	int firstsurface = node_firstsurface( node, mod );
+
+	for( int i = 0; i < numsurfaces; i++ )
+	{
+		msurface_t *surf = &mod->surfaces[firstsurface + i];
+
+		if( Mod_SurfaceOnPlane( surf, node->plane ) && PM_PointInFacet( surf, mid ))
+			return surf;
+	}
+
+	if( pm_trace_lastleaf )
+	{
+		msurface_t **mark = pm_trace_lastleaf->firstmarksurface;
+
+		for( int i = 0; i < pm_trace_lastleaf->nummarksurfaces; i++ )
+		{
+			if( Mod_SurfaceOnPlane( mark[i], node->plane ) && PM_PointInFacet( mark[i], mid ))
+				return mark[i];
+		}
+	}
+
+	return NULL;
+}
+
 /*
 ==================
 PM_RecursiveSurfCheck
@@ -105,7 +171,11 @@ msurface_t *PM_RecursiveSurfCheck( model_t *mod, mnode_t *node, vec3_t p1, vec3_
 {
 loc0:
 	if( node->contents < 0 )
+	{
+		if( node->contents != CONTENTS_SOLID )
+			pm_trace_lastleaf = (mleaf_t *)node;
 		return NULL;
+	}
 
 	float t1 = PlaneDiff( p1, node->plane );
 	float t2 = PlaneDiff( p2, node->plane );
@@ -134,31 +204,9 @@ loc0:
 		return surf;
 
 	// walk through real faces
-	int numsurfaces = node_numsurfaces( node, mod );
-	int firstsurface = node_firstsurface( node, mod );
-	for( int i = 0; i < numsurfaces; i++ )
+	surf = PM_SurfaceAtPoint( mod, node, mid );
+	if( surf != NULL )
 	{
-		msurface_t	*surf = &mod->surfaces[firstsurface + i];
-		mextrasurf_t	*info = surf->info;
-		mfacebevel_t	*fb = info->bevel;
-		vec3_t		delta;
-
-		if( !fb ) continue;	// ???
-
-		VectorSubtract( mid, fb->origin, delta );
-		if( DotProduct( delta, delta ) >= fb->radius )
-			continue;	// no intersection
-
-		int j;
-		for( j = 0; j < fb->numedges; j++ )
-		{
-			if( PlaneDiff( mid, &fb->edges[j] ) > FRAC_EPSILON )
-				break; // outside the bounds
-		}
-
-		if( j != fb->numedges )
-			continue; // we are outside the bounds of the facet
-
 		// hit the surface
 		int contents = PM_SampleMiptex( surf, mid );
 
@@ -203,6 +251,7 @@ msurface_t *PM_TraceSurface( physent_t *pe, vec3_t start, vec3_t end )
 		Matrix4x4_VectorITransform( matrix, end, end_l );
 	}
 
+	pm_trace_lastleaf = NULL;
 	return PM_RecursiveSurfCheck( bmodel, &bmodel->nodes[hull->firstclipnode], start_l, end_l );
 }
 
@@ -223,6 +272,7 @@ loc0:
 			return CONTENTS_SOLID;
 		if( node->contents == CONTENTS_SKY )
 			return CONTENTS_SKY;
+		pm_trace_lastleaf = (mleaf_t *)node;
 		trace->fraction = 1.0f;
 		return CONTENTS_EMPTY;
 	}
@@ -261,31 +311,9 @@ loc0:
 	}
 
 	// walk through real faces
-	int numsurfaces = node_numsurfaces( node, mod );
-	int firstsurface = node_firstsurface( node, mod );
-	for( int i = 0; i < numsurfaces; i++ )
+	msurface_t *surf = PM_SurfaceAtPoint( mod, node, mid );
+	if( surf != NULL )
 	{
-		msurface_t	*surf = &mod->surfaces[firstsurface + i];
-		mextrasurf_t	*info = surf->info;
-		mfacebevel_t	*fb = info->bevel;
-		vec3_t		delta;
-
-		if( !fb ) continue;
-
-		VectorSubtract( mid, fb->origin, delta );
-		if( DotProduct( delta, delta ) >= fb->radius )
-			continue;	// no intersection
-
-		int j;
-		for( j = 0; j < fb->numedges; j++ )
-		{
-			if( PlaneDiff( mid, &fb->edges[j] ) > FRAC_EPSILON )
-				break; // outside the bounds
-		}
-
-		if( j != fb->numedges )
-			continue; // we are outside the bounds of the facet
-
 		// hit the surface
 		int contents = PM_SampleMiptex( surf, mid );
 
@@ -353,6 +381,7 @@ int PM_TestLineExt( playermove_t *pmove, physent_t *ents, int numents, const vec
 			.fraction = 1.0f,
 		};
 
+		pm_trace_lastleaf = NULL;
 		PM_TestLine_r( pe->model, &pe->model->nodes[hull->firstclipnode], 0.0f, 1.0f, start_l, end_l, &trace_bbox );
 
 		if( trace_bbox.contents != CONTENTS_EMPTY || trace_bbox.fraction < trace.fraction )

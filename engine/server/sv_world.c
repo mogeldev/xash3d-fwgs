@@ -1482,6 +1482,66 @@ trace_t SV_MoveToss( edict_t *tossent, edict_t *ignore )
 ===============================================================================
 */
 
+static mleaf_t *sv_trace_lastleaf; // last non-solid leaf the light trace passed through
+
+/*
+=================
+SV_LightPointSurface
+
+sample the lightmap of surf at mid if mid lies within its lightmap extents
+=================
+*/
+static qboolean SV_LightPointSurface( const msurface_t *surf, const vec3_t mid, vec3_t point_color )
+{
+	const mextrasurf_t *info = surf->info;
+	int smax, tmax, map, size;
+	int sample_size;
+	float ds, dt, s, t;
+	const color24 *lm;
+
+	if( FBitSet( surf->flags, SURF_DRAWTILED ))
+		return false;	// no lightmaps
+
+	s = DotProduct( mid, info->lmvecs[0] ) + info->lmvecs[0][3];
+	t = DotProduct( mid, info->lmvecs[1] ) + info->lmvecs[1][3];
+
+	if( s < info->lightmapmins[0] || t < info->lightmapmins[1] )
+		return false;
+
+	ds = s - info->lightmapmins[0];
+	dt = t - info->lightmapmins[1];
+
+	if ( ds > info->lightextents[0] || dt > info->lightextents[1] )
+		return false;
+
+	if( !surf->samples )
+		return true;
+
+	sample_size = Mod_SampleSizeForFace( surf );
+	smax = (info->lightextents[0] / sample_size) + 1;
+	tmax = (info->lightextents[1] / sample_size) + 1;
+	ds /= sample_size;
+	dt /= sample_size;
+
+	VectorClear( point_color );
+
+	lm = surf->samples + Q_rint( dt ) * smax + Q_rint( ds );
+	size = smax * tmax;
+
+	for( map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
+	{
+		float scale = sv.lightstyles[surf->styles[map]].value;
+
+		point_color[0] += lm->r * scale;
+		point_color[1] += lm->g * scale;
+		point_color[2] += lm->b * scale;
+
+		lm += size; // skip to next lightmap
+	}
+
+	return true;
+}
+
 /*
 =================
 SV_RecursiveLightPoint
@@ -1496,7 +1556,11 @@ static qboolean SV_RecursiveLightPoint( model_t *model, mnode_t *node, const vec
 
 	// didn't hit anything
 	if( !node || node->contents < 0 )
+	{
+		if( node && node->contents != CONTENTS_SOLID )
+			sv_trace_lastleaf = (mleaf_t *)node;
 		return false;
+	}
 
 	// calculate mid point
 	front = PlaneDiff( start, node->plane );
@@ -1523,53 +1587,29 @@ static qboolean SV_RecursiveLightPoint( model_t *model, mnode_t *node, const vec
 	for( int i = 0; i < numsurfaces; i++ )
 	{
 		const msurface_t *surf = &model->surfaces[firstsurface + i];
-		const mextrasurf_t *info = surf->info;
-		int smax, tmax, map, size;
-		int sample_size;
-		float ds, dt, s, t;
-		const color24 *lm;
 
-		if( FBitSet( surf->flags, SURF_DRAWTILED ))
-			continue;	// no lightmaps
-
-		s = DotProduct( mid, info->lmvecs[0] ) + info->lmvecs[0][3];
-		t = DotProduct( mid, info->lmvecs[1] ) + info->lmvecs[1][3];
-
-		if( s < info->lightmapmins[0] || t < info->lightmapmins[1] )
+		// a surface off the node plane cannot be hit at mid (Nightfire)
+		if( !Mod_SurfaceOnPlane( surf, node->plane ))
 			continue;
 
-		ds = s - info->lightmapmins[0];
-		dt = t - info->lightmapmins[1];
-
-		if ( ds > info->lightextents[0] || dt > info->lightextents[1] )
-			continue;
-
-		if( !surf->samples )
+		if( SV_LightPointSurface( surf, mid, point_color ))
 			return true;
+	}
 
-		sample_size = Mod_SampleSizeForFace( surf );
-		smax = (info->lightextents[0] / sample_size) + 1;
-		tmax = (info->lightextents[1] / sample_size) + 1;
-		ds /= sample_size;
-		dt /= sample_size;
+	// Nightfire: the surface hit at mid is listed by the leaf the trace just
+	// left, not filed under this node
+	if( sv_trace_lastleaf )
+	{
+		msurface_t **mark = sv_trace_lastleaf->firstmarksurface;
 
-		VectorClear( point_color );
-
-		lm = surf->samples + Q_rint( dt ) * smax + Q_rint( ds );
-		size = smax * tmax;
-
-		for( map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
+		for( int i = 0; i < sv_trace_lastleaf->nummarksurfaces; i++ )
 		{
-			float scale = sv.lightstyles[surf->styles[map]].value;
+			if( !Mod_SurfaceOnPlane( mark[i], node->plane ))
+				continue;
 
-			point_color[0] += lm->r * scale;
-			point_color[1] += lm->g * scale;
-			point_color[2] += lm->b * scale;
-
-			lm += size; // skip to next lightmap
+			if( SV_LightPointSurface( mark[i], mid, point_color ))
+				return true;
 		}
-
-		return true;
 	}
 
 	// go down back side
@@ -1631,6 +1671,7 @@ int SV_LightForEntity( edict_t *pEdict )
 		end[2] = start[2] + world.size[2];
 	else end[2] = start[2] - world.size[2];
 
+	sv_trace_lastleaf = NULL;
 	SV_RecursiveLightPoint( sv.worldmodel, sv.worldmodel->nodes, start, end, point_color );
 
 	return VectorAvg( point_color );

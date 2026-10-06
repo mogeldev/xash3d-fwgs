@@ -181,6 +181,34 @@ int Mod_SampleSizeForFace( const msurface_t *surf );
 byte *Mod_GetPVSForPoint( const vec3_t p );
 void Mod_PrintWorldStats_f( void );
 
+/*
+==================
+Mod_SurfaceOnPlane
+
+Point traces through the node tree (light points, PM_TraceSurface) take a
+node's surfaces to lie on the node plane, as GoldSrc compilers guarantee.
+James Bond 007: Nightfire (PC) maps file each surface under the lowest common
+ancestor of the leaves listing it, usually off its plane, and store planes in
+flipped pairs, so compare geometrically. True for every GoldSrc node surface.
+==================
+*/
+static inline qboolean Mod_SurfaceOnPlane( const msurface_t *surf, const mplane_t *plane )
+{
+	float d;
+
+	if( surf->plane == plane )
+		return true;
+
+	d = DotProduct( surf->plane->normal, plane->normal );
+
+	if( d > 0.999f )
+		return fabs( surf->plane->dist - plane->dist ) < 0.1f;
+	if( d < -0.999f )
+		return fabs( surf->plane->dist + plane->dist ) < 0.1f;
+
+	return false;
+}
+
 //
 // mod_studio.c
 //
