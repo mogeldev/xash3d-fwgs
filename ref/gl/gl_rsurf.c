@@ -3478,6 +3478,15 @@ qboolean R_AddSurfToVBO( msurface_t *surf, qboolean buildlightmap )
 
 =============================================================
 */
+// The world is walked twice with identical culling: the first pass marks the
+// surfaces of the visible leaves, the second adds the surfaces of the visited
+// nodes. A single pass adds a node's surfaces before its back side has been
+// walked, so a surface listed only by leaves behind the node's plane is
+// still unmarked and dropped. GoldSrc compilers never produce that, but
+// James Bond 007: Nightfire (PC) maps file each surface under the lowest
+// common ancestor of the leaves listing it, which can be any of them.
+static qboolean r_worldnode_addsurfs;
+
 /*
 ================
 R_RecursiveWorldNode
@@ -3513,6 +3522,9 @@ loc0:
 		mleaf_t *pleaf = (mleaf_t *)node;
 		msurface_t **mark = pleaf->firstmarksurface;
 
+		if( r_worldnode_addsurfs )
+			return; // marked in the first pass
+
 		for( int i = 0; i < pleaf->nummarksurfaces; i++ )
 			mark[i]->visframe = tr.framecount;
 
@@ -3532,6 +3544,12 @@ loc0:
 
 	// recurse down the children, front side first
 	R_RecursiveWorldNode( node_child( node, side, WORLDMODEL ), clipflags );
+
+	if( !r_worldnode_addsurfs )
+	{
+		node = node_child( node, !side, WORLDMODEL );
+		goto loc0;
+	}
 
 	int firstsurface = node_firstsurface( node, WORLDMODEL );
 	int numsurfaces = node_numsurfaces( node, WORLDMODEL );
@@ -3726,7 +3744,13 @@ void R_DrawWorld( void )
 	double start = gEngfuncs.pfnTime();
 	if( FBitSet( RI.rvp.flags, RF_DRAW_OVERVIEW ))
 		R_DrawWorldTopView( WORLDMODEL->nodes, RI.frustum.clipFlags );
-	else R_RecursiveWorldNode( WORLDMODEL->nodes, RI.frustum.clipFlags );
+	else
+	{
+		r_worldnode_addsurfs = false;
+		R_RecursiveWorldNode( WORLDMODEL->nodes, RI.frustum.clipFlags );
+		r_worldnode_addsurfs = true;
+		R_RecursiveWorldNode( WORLDMODEL->nodes, RI.frustum.clipFlags );
+	}
 	double end = gEngfuncs.pfnTime();
 
 	r_stats.t_world_node = end - start;
