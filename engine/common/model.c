@@ -334,6 +334,18 @@ static model_t *Mod_LoadModel( model_t *mod, qboolean crash )
 
 	byte *buf = FS_LoadFile( tempname, &length, false );
 
+	// James Bond 007: Nightfire ships its sprites only as .spz (SPZ2, converted
+	// in mod_sprite.c); game code asking for the .spr name (muzzle flashes,
+	// HLSDK effects) gets the .spz of the same name.
+	if( !buf && !Q_stricmp( COM_FileExtension( tempname ), "spr" ))
+	{
+		char spzname[MAX_QPATH];
+
+		Q_strncpy( spzname, tempname, sizeof( spzname ));
+		COM_ReplaceExtension( spzname, ".spz", sizeof( spzname ));
+		buf = FS_LoadFile( spzname, &length, false );
+	}
+
 	if( !buf || length < sizeof( uint ))
 	{
 		memset( mod, 0, sizeof( model_t ));

@@ -82,6 +82,7 @@ enum {
 #define SZ_ATTACH     88
 #define SZ_MESH       32
 #define SZ_MODEL     132
+#define SZ_EVENT      76
 #define NUM_MODELINFOS 24
 
 static int rd_i32( const unsigned char *p )
@@ -575,6 +576,35 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize )
 		buf_i32( &out, rd_i32( sp + 164 ));
 		buf_u8( &out, 0 ); buf_u8( &out, 0 ); buf_u8( &out, 0 ); buf_u8( &out, 0 );
 		buf_i32( &out, 0 );
+	}
+
+	// ---- animation events ----
+	// Same 76-byte layout as mstudioevent_t (frame, event, type, options[64])
+	// and Half-Life event numbers (the characters use the grunt's 2-7/11 and
+	// client 5001/5004), so they are copied; the converter used to drop them.
+	if( numseq > 0 )
+	{
+		const size_t seq_size = ( out.len - (size_t)seq_off ) / (size_t)numseq;
+		for( int i = 0; i < numseq; i++ )
+		{
+			const unsigned char *sp = in + rd_i32( in + H_SEQ + 4 ) + (size_t)i * SZ_SEQ;
+			int nev = rd_i32( sp + 48 );
+			int evoff = rd_i32( sp + 52 );
+			if( nev <= 0 || nev > 1024 || evoff <= 0 || (size_t)evoff + (size_t)nev * SZ_EVENT > size )
+				continue;
+			buf_patch_i32( &out, (size_t)seq_off + i * seq_size + 48, nev );
+			buf_patch_i32( &out, (size_t)seq_off + i * seq_size + 52, (int)out.len );
+			for( int k = 0; k < nev; k++ )
+			{
+				const unsigned char *ep = in + evoff + (size_t)k * SZ_EVENT;
+				char options[64] = { 0 };
+				nf_cstr( ep + 12, 64, options, 64 );
+				buf_i32( &out, rd_i32( ep ));
+				buf_i32( &out, rd_i32( ep + 4 ));
+				buf_i32( &out, rd_i32( ep + 8 ));
+				buf_bytes( &out, options, 64 );
+			}
+		}
 	}
 
 	// ---- textures ----
