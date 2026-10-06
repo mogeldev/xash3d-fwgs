@@ -237,6 +237,13 @@ static void emit_model_geometry( buf_t *out, const unsigned char *in, size_t siz
 
 	memset( gmap, 0xff, (size_t)(nverts_g > 0 ? nverts_g : 1) * sizeof( int ));
 	int nextlocal = 0, meshcount = 0;
+	// Local vertex/normal indices are handed out mesh by mesh, so every mesh
+	// introduces a contiguous run of new normals. The renderer lights normals
+	// sequentially per mesh (mstudiomesh_t.numnorms) and the tri commands index
+	// those light values, so each mesh must report how many it introduced;
+	// with 0 every vertex stays unlit (black).
+	int mesh_norms[MAXSTUDIOMESHES];
+	memset( mesh_norms, 0, sizeof( mesh_norms ));
 	for( int mii = 0; mii < NUM_MODELINFOS; mii++ )
 	{
 		int mio = rd_i32( mp + 36 + 4 * mii );
@@ -246,6 +253,8 @@ static void emit_model_geometry( buf_t *out, const unsigned char *in, size_t siz
 		{
 			const unsigned char *mesh = in + moff + (size_t)k * SZ_MESH;
 			int tcount = rd_u16( mesh + 26 ), tindex = rd_u16( mesh + 24 );
+			const int mslot = meshcount < MAXSTUDIOMESHES ? meshcount : MAXSTUDIOMESHES - 1;
+			const int firstlocal = nextlocal;
 			meshcount++;
 			for( int t = 0; t < tcount; t++ )
 			{
@@ -266,6 +275,8 @@ static void emit_model_geometry( buf_t *out, const unsigned char *in, size_t siz
 					}
 				}
 			}
+			// meshes past the limit are not emitted; their normals go to the last one
+			mesh_norms[mslot] += nextlocal - firstlocal;
 		}
 	}
 	if( meshcount > MAXSTUDIOMESHES ) meshcount = MAXSTUDIOMESHES;
@@ -302,8 +313,8 @@ static void emit_model_geometry( buf_t *out, const unsigned char *in, size_t siz
 			tri_patch[wi] = out->len;
 			buf_i32( out, 0 );
 			buf_i32( out, skinref );
-			buf_i32( out, 0 );
-			buf_i32( out, 0 );
+			buf_i32( out, mesh_norms[wi] );	// numnorms
+			buf_i32( out, 0 );		// normindex (unused by the renderer)
 			wi++;
 		}
 	}
