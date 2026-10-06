@@ -101,6 +101,74 @@ static void nf_cstr( const unsigned char *p, int maxlen, char *out, int outsz )
 	out[i] = '\0';
 }
 
+// Nightfire draws wld_glass surfaces blended with their texture alpha (e.g.
+// osato/glass_01: alpha 0..119, a diagonal reflection streak), whatever the
+// entity's rendermode; level designers gave glass brush entities rendermode 2
+// or 4. GoldSrc rendermode 4 (kRenderTransAlpha) alpha-tests instead, which
+// cuts the glass into an opaque and an invisible half. Rewrite "rendermode"
+// "4" to "2" (kRenderTransTexture: texture alpha x renderamt, sorted) on brush
+// entities ("model" "*N") whose model has glass surfaces. Same length, so the
+// entity text is patched in place. Returns the number of entities changed.
+static int nf_glass_rendermode( char *ents, int elen, const unsigned char *model_glass, int nmodels )
+{
+	int changed = 0;
+	int pos = 0;
+
+	while( pos < elen )
+	{
+		char *model = NULL, *rendermode = NULL;
+		int nstr = 0;
+
+		while( pos < elen && ents[pos] != '{' )
+			pos++;
+		if( pos >= elen )
+			break;
+		pos++;
+
+		// alternating "key" "value" strings up to the closing brace
+		while( pos < elen && ents[pos] != '}' )
+		{
+			if( ents[pos] != '"' )
+			{
+				pos++;
+				continue;
+			}
+
+			char *s = ents + pos + 1;
+			int len = 0;
+			while( pos + 1 + len < elen && s[len] != '"' )
+				len++;
+			pos += len + 2;
+
+			if( nstr++ & 1 )
+				continue; // a value; keys are handled below
+
+			// the value string follows the key
+			while( pos < elen && ents[pos] != '"' && ents[pos] != '}' )
+				pos++;
+			if( pos >= elen || ents[pos] != '"' )
+				break;
+
+			if( len == 5 && !strncmp( s, "model", 5 ))
+				model = ents + pos + 1;
+			else if( len == 10 && !strncmp( s, "rendermode", 10 ))
+				rendermode = ents + pos + 1;
+		}
+
+		if( model && rendermode && model[0] == '*' && rendermode[0] == '4' && rendermode[1] == '"' )
+		{
+			int mi = atoi( model + 1 );
+			if( mi > 0 && mi < nmodels && model_glass[mi] )
+			{
+				rendermode[0] = '2';
+				changed++;
+			}
+		}
+	}
+
+	return changed;
+}
+
 // ------------------------------------------------------------------ growable buffer
 typedef struct { unsigned char *d; size_t len, cap; } buf_t;
 
@@ -2373,13 +2441,43 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	// "_nftexN" keys so game-DLL entity parsers (which use fixed token buffers)
 	// never see a huge value; the engine concatenates them in order.
 	{
-		const unsigned char *ents = L[0];
 		int elen = llen[0];
 		int cut = 0;
 		int chunk = 0, first = 1;
 		size_t clen = 0;
 		char hdr[32];
 		buf_t key = { 0 };
+		unsigned char *ents_copy = (unsigned char *)malloc( elen ? elen : 1 );
+		unsigned char *model_glass = (unsigned char *)calloc( nmodels ? nmodels : 1, 1 );
+		const unsigned char *ents = L[0];
+
+		for( int mi = 1; mi < nmodels && ents_copy && model_glass; mi++ )
+		{
+			int msi = rd_i32( L[14] + mi * 56 + 48 );
+			int msc = rd_i32( L[14] + mi * 56 + 52 );
+
+			for( int si = msi; si < msi + msc && si >= 0 && si < nsurfaces; si++ )
+			{
+				int matidx = rd_i32( L[9] + si * 48 + 28 );
+				char mat[64];
+
+				if( matidx < 0 || matidx >= nmat )
+					continue;
+				nf_cstr( L[3] + matidx * 64, 64, mat, sizeof( mat ));
+				if( strstr( mat, "glass" ))
+				{
+					model_glass[mi] = 1;
+					break;
+				}
+			}
+		}
+		if( ents_copy && model_glass )
+		{
+			memcpy( ents_copy, L[0], elen );
+			nf_glass_rendermode( (char *)ents_copy, elen, model_glass, nmodels );
+			ents = ents_copy;
+		}
+		free( model_glass );
 
 		while( cut < elen && ents[cut] != '}' )
 			cut++;
@@ -2414,6 +2512,7 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 		buf_bytes( &lumps[0], key.d, key.len );
 		buf_bytes( &lumps[0], ents + cut, elen - cut );
 		free( key.d );
+		free( ents_copy );
 	}
 	// planes
 	for( int i = 0; i < nplanes; i++ )
