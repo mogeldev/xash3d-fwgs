@@ -186,10 +186,12 @@ qboolean SCR_DrawCinematic( void )
 
 /*
 ==================
-SCR_PlayCinematic
+SCR_OpenCinematic
+
+opens the movie, fits it to the screen and starts its sound
 ==================
 */
-qboolean SCR_PlayCinematic( const char *arg )
+static qboolean SCR_OpenCinematic( const char *arg, qboolean stopsounds )
 {
 	int x, y, w, h;
 	const char	*fullpath = FS_GetDiskPath( arg, false );
@@ -233,7 +235,8 @@ qboolean SCR_PlayCinematic( const char *arg )
 	if( AVI_HaveAudioTrack( cin_state ))
 	{
 		// begin streaming
-		S_StopAllSounds( true );
+		if( stopsounds )
+			S_StopAllSounds( true );
 		S_StartStreaming();
 	}
 
@@ -243,6 +246,19 @@ qboolean SCR_PlayCinematic( const char *arg )
 		AVI_RENDER_W, w,
 		AVI_RENDER_H, h,
 		AVI_PARM_LAST );
+
+	return true;
+}
+
+/*
+==================
+SCR_PlayCinematic
+==================
+*/
+qboolean SCR_PlayCinematic( const char *arg )
+{
+	if( !SCR_OpenCinematic( arg, true ))
+		return false;
 
 	UI_SetActiveMenu( false );
 	cls.state = ca_cinematic;
@@ -272,6 +288,134 @@ void SCR_StopCinematic( void )
 }
 
 /*
+=================================================================
+
+IN-GAME MOVIES (James Bond 007: Nightfire)
+
+The retail engine plays cutscenes while the client stays connected:
+worldspawn "intromovie" (via the cvar v_movie, once the client has
+the level) and trigger_playmovie (client message PlayMovie). The game
+waits until the movie ends; a single player game is held like with
+the menu open (CL_IsInGame), Escape skips the movie
+
+=================================================================
+*/
+static qboolean cin_ingame;
+
+static CVAR_DEFINE_AUTO( v_movie, "", 0, "Nightfire intro movie of the level, played and cleared once the client is active" );
+
+qboolean SCR_InGameMovieActive( void )
+{
+	return cin_ingame;
+}
+
+void SCR_StopInGameMovie( void )
+{
+	if( !cin_ingame )
+		return;
+
+	AVI_CloseVideo( cin_state );
+	S_StopStreaming();
+	cin_ingame = false;
+}
+
+/*
+==================
+SCR_PlayInGameMovie
+
+retail path rule: movies/<name> if the name has an extension,
+else movies/<name>.avi
+==================
+*/
+qboolean SCR_PlayInGameMovie( const char *name )
+{
+	string path;
+
+	if( COM_StringEmpty( name ))
+		return false;
+
+	if( cls.state != ca_active )
+	{
+		Con_Printf( S_WARN "%s: not in a game, %s skipped\n", __func__, name );
+		return false;
+	}
+
+	SCR_StopInGameMovie();
+
+	Q_snprintf( path, sizeof( path ), "movies/%s", name );
+	COM_DefaultExtension( path, ".avi", sizeof( path ));
+
+	// the level sounds only pause (s_mix.c), so looping ones go on afterwards
+	if( !SCR_OpenCinematic( path, false ))
+	{
+		Con_Printf( S_ERROR "%s: can't play %s\n", __func__, path );
+		return false;
+	}
+
+	cin_ingame = true;
+	Con_FastClose();
+	return true;
+}
+
+/*
+==================
+SCR_CheckIntroMovie
+
+engine.dll 0x430560d0: called when the client has the level;
+-nointro skips it like the start-up movies
+==================
+*/
+void SCR_CheckIntroMovie( void )
+{
+	string name;
+
+	if( COM_StringEmpty( v_movie.string ))
+		return;
+
+	Q_strncpy( name, v_movie.string, sizeof( name ));
+	Cvar_DirectSet( &v_movie, "" );
+
+	if( !Sys_CheckParm( "-nointro" ))
+		SCR_PlayInGameMovie( name );
+}
+
+/*
+==================
+SCR_DrawInGameMovie
+
+draws the movie instead of the view, false once it has ended
+==================
+*/
+qboolean SCR_DrawInGameMovie( void )
+{
+	if( !cin_ingame || !ref.initialized )
+		return false;
+
+	ref.dllFuncs.R_Set2DMode( true );
+	ref.dllFuncs.GL_SetRenderMode( kRenderNormal );
+	ref.dllFuncs.R_DrawStretchPic( 0, 0, refState.width, refState.height, 0, 0, 1, 1, R_GetBuiltinTexture( REF_BLACK_TEXTURE ));
+
+	if( !AVI_Think( cin_state ))
+	{
+		SCR_StopInGameMovie();
+		return false;
+	}
+
+	return true;
+}
+
+static void SCR_PlayInGameMovie_f( void )
+{
+	if( Cmd_Argc() != 2 )
+	{
+		Con_Printf( S_USAGE "nf_playmovie <name>\n" );
+		return;
+	}
+
+	SCR_PlayInGameMovie( Cmd_Argv( 1 ));
+}
+
+/*
 ==================
 SCR_InitCinematic
 ==================
@@ -281,6 +425,9 @@ void SCR_InitCinematic( void )
 	AVI_Initailize ();
 	cin_state = AVI_GetState( CIN_MAIN );
 	cin_texture = ref.dllFuncs.GL_CreateTexture( "*cintexture", 64, 64, NULL, TF_NOMIPMAP|TF_CLAMP );
+
+	Cvar_RegisterVariable( &v_movie );
+	Cmd_AddCommand( "nf_playmovie", SCR_PlayInGameMovie_f, "play a Nightfire movie (movies/<name>) while in game" );
 }
 
 int SCR_GetCinematicTexture( void )

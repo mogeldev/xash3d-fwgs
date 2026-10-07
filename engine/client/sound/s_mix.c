@@ -339,7 +339,7 @@ static int S_MixNormalChannelsToRoombuffer( portable_samplepair_t *dst, int end 
 			{
 				// play, playvol
 			}
-			else if(( cls.key_dest == key_menu || cl.paused ) && !FBitSet( ch->flags, FL_CHAN_LOCAL_SOUND ) && sp )
+			else if(( cls.key_dest == key_menu || cl.paused || SCR_InGameMovieActive( )) && !FBitSet( ch->flags, FL_CHAN_LOCAL_SOUND ) && sp )
 			{
 				// play only local sounds, keep pause for other
 				continue;

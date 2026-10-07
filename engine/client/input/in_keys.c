@@ -716,6 +716,10 @@ void GAME_EXPORT Key_Event( int key, int down )
 		return;
 	}
 #endif
+	// Nightfire in-game movie: only Escape (skip) and the console key
+	if( cls.key_dest == key_game && down && SCR_InGameMovieActive( ) && key != K_ESCAPE && key != '`' && key != '~' )
+		return;
+
 	// distribute the key down event to the apropriate handler
 	if( cls.key_dest == key_game && ( down || keys[key].gamedown ))
 	{

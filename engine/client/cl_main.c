@@ -126,7 +126,8 @@ qboolean CL_IsInGame( void )
 	if( cl.background || cl.maxclients > 1 )
 		return true; // always active for multiplayer or background map
 
-	return ( cls.key_dest == key_game ); // active if not menu or console
+	// Nightfire: the game waits while an in-game movie plays
+	return ( cls.key_dest == key_game && !SCR_InGameMovieActive( )); // active if not menu or console
 }
 
 qboolean CL_IsInConsole( void )
@@ -334,6 +335,7 @@ static void CL_CheckClientState( void )
 		cl.first_frame = true;		// first rendering frame
 
 		CL_UpdateLogo();
+		SCR_CheckIntroMovie();		// Nightfire worldspawn "intromovie"
 
 		SCR_MakeLevelShot();		// make levelshot if needs
 		Cvar_SetValue( "scr_loading", 0.0f );	// reset progress bar
@@ -803,7 +805,7 @@ static void CL_CreateCmd( void )
 		cmd = &nullcmd;
 	}
 
-	qboolean  active = (( cls.signon == SIGNONS ) && !cl.paused && !cls.demoplayback );
+	qboolean  active = (( cls.signon == SIGNONS ) && !cl.paused && !cls.demoplayback && !SCR_InGameMovieActive( ));
 	Platform_PreCreateMove();
 	clgame.dllFuncs.CL_CreateMove( host.frametime, cmd, active );
 	IN_EngineAppendMove( host.frametime, cmd, active );
@@ -1781,6 +1783,7 @@ void CL_Disconnect( void )
 	cls.connect_time = 0;
 	cls.changedemo = false;
 	cls.max_fragment_size = FRAGMENT_MAX_SIZE; // reset fragment size
+	SCR_StopInGameMovie();
 	Voice_Disconnect();
 	CL_Stop_f();
 
@@ -3641,6 +3644,8 @@ void CL_Escape_f( void )
 
 	if( cls.state == ca_cinematic )
 		SCR_NextMovie(); // jump to next movie
+	else if( SCR_InGameMovieActive( ))
+		SCR_StopInGameMovie(); // skip the Nightfire movie
 	else UI_SetActiveMenu( true );
 }
 

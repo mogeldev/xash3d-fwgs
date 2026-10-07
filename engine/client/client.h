@@ -1240,6 +1240,11 @@ qboolean SCR_NextMovie( void );
 void SCR_RunCinematic( void );
 void SCR_StopCinematic( void );
 void CL_PlayVideo_f( void );
+qboolean SCR_PlayInGameMovie( const char *name );
+qboolean SCR_InGameMovieActive( void );
+void SCR_StopInGameMovie( void );
+void SCR_CheckIntroMovie( void );
+qboolean SCR_DrawInGameMovie( void );
 
 
 //

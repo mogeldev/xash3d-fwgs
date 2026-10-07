@@ -687,7 +687,8 @@ void SCR_UpdateScreen( void )
 		break;
 	case ca_active:
 		Con_RunConsole ();
-		V_RenderView();
+		if( !SCR_DrawInGameMovie( ))
+			V_RenderView();
 		break;
 	case ca_cinematic:
 		SCR_DrawCinematic();

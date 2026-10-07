@@ -537,7 +537,7 @@ void V_PostRender( void )
 	ref.dllFuncs.R_AllowFog( false );
 	ref.dllFuncs.R_Set2DMode( true );
 
-	if( cls.state == ca_active && cls.signon == SIGNONS && cls.scrshot_action != scrshot_mapshot )
+	if( cls.state == ca_active && cls.signon == SIGNONS && cls.scrshot_action != scrshot_mapshot && !SCR_InGameMovieActive( ))
 	{
 		SCR_TileClear();
 		CL_DrawHUD( CL_ACTIVE );
