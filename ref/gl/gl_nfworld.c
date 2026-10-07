@@ -27,6 +27,22 @@ lightmap overbright.
 // * "skyterrain" / "skyocean": two more sky models drawn at the world
 //   origin (not camera-centred): distant terrain rings / the ocean plane.
 //
+// * "skycloudlow_lightning" / "skycloudhigh_lightning" (int, cvars
+//   cl_skylow_lightning / cl_skyhigh_lightning, default 0) and "skylightning"
+//   (cl_lightning_enable, default 1): lightning flashes on the cloud layers.
+//   Retail client.dll (CloudParameters update, 0x41001490) runs a per-frame
+//   state machine per cloud submesh: while idle, a flash starts when
+//   RandomLong( 0, lightning ) < 5; it lasts RandomLong( cl_lightning_min 3,
+//   cl_lightning_max 35 ) frames, and moves the material's Light1 (a point
+//   light) to the cloud origin + a random offset (+-1000, +-1000, +-50) that
+//   jitters by random / framesLeft per frame and ends in a division by zero
+//   (light at infinity = one dark frame). The shader that turns Light1 into
+//   cloud brightness is not known: this port approximates it by an additive
+//   second pass of the layer whose strength follows the light attenuation
+//   (retail default Light1Attenuation 0, 0.01, 0 = 1 / (0.01 * distance)).
+//   The retail update runs once per rendered frame; here it runs at a fixed
+//   60 Hz so the flash timing does not depend on the frame rate.
+//
 // * "overbright": the retail client sets its r_overbright cvar from this key
 //   ("Set overbright amount 0-255, 128 = off"), so the lightmap brightness
 //   factor is overbright / 128 (e.g. 192 -> 1.5). The GL renderer draws
@@ -46,16 +62,32 @@ lightmap overbright.
 
 #define NF_SKY_YAW  270.0f	// retail draws every sky model with yaw 270
 
+// retail lightning cvars (client.dll): flash length in frames, start chance
+#define NF_LIGHTNING_MIN_FRAMES  3
+#define NF_LIGHTNING_MAX_FRAMES  35
+#define NF_LIGHTNING_START_ROLL  5
+#define NF_LIGHTNING_TICK_RATE   60.0
+#define NF_LIGHTNING_MAX_TICKS   8
+// [assumed] brightness gain of the additive flash pass
+#define NF_LIGHTNING_GAIN        3.0f
+
 typedef struct
 {
 	model_t *model;
 	float   zoffset;	// height key / 10 (camera z offset)
 	vec2_t  scroll;		// texture scroll speed (u, v) per second
+	int     lightning;	// "skycloud*_lightning": 0 = none, else start-roll range
+	int     frames;		// flash frames left, 0 = idle
+	qboolean flash;		// retail "A8": the Light1 point light is on
+	qboolean logged;
+	vec3_t  loffset;	// light offset from the layer origin
 } nf_skylayer_t;
 
 static struct
 {
 	model_t      *dome;
+	qboolean     lightning;		// worldspawn "skylightning" (cl_lightning_enable)
+	double       lightningtime;	// time of the last lightning tick
 	nf_skylayer_t cloudlow;
 	nf_skylayer_t cloudhigh;
 	nf_skylayer_t terrain;
@@ -130,6 +162,8 @@ void R_NightfireNewMap( void )
 	memset( &nfworld, 0, sizeof( nfworld ));
 
 	// retail cvar defaults
+	nfworld.lightning = true;
+	nfworld.lightningtime = gp_cl->time;
 	nfworld.cloudlow.zoffset = NF_SKY_LOW_HEIGHT / 10.0f;
 	nfworld.cloudlow.scroll[0] = NF_SKY_LOW_SPEED_S;
 	nfworld.cloudlow.scroll[1] = NF_SKY_LOW_SPEED_T;
@@ -190,6 +224,12 @@ void R_NightfireNewMap( void )
 			R_NightfireSkySpeed( token, nfworld.cloudlow.scroll );
 		else if( !Q_stricmp( key, "skycloudhigh_speed" ))
 			R_NightfireSkySpeed( token, nfworld.cloudhigh.scroll );
+		else if( !Q_stricmp( key, "skycloudlow_lightning" ))
+			nfworld.cloudlow.lightning = Q_atoi( token );
+		else if( !Q_stricmp( key, "skycloudhigh_lightning" ))
+			nfworld.cloudhigh.lightning = Q_atoi( token );
+		else if( !Q_stricmp( key, "skylightning" ))
+			nfworld.lightning = Q_atoi( token ) != 0;
 		else if( !Q_stricmp( key, "overbright" ))
 		{
 			nfworld.overbright = bound( 0.0f, Q_atof( token ), 255.0f );
@@ -223,7 +263,7 @@ texture alpha (RGB textures come out opaque). Cloud layers scroll their
 texture by their speed key.
 =============
 */
-static void R_DrawNightfireSkyLayer( model_t *m, const vec3_t origin, int rendermode, const vec2_t scroll )
+static void R_DrawNightfireSkyLayer( model_t *m, const vec3_t origin, int rendermode, int renderamt, const vec2_t scroll )
 {
 	cl_entity_t *e = &nfworld.ent;
 	qboolean doscr = ( scroll != NULL && ( scroll[0] != 0.0f || scroll[1] != 0.0f ));
@@ -232,7 +272,7 @@ static void R_DrawNightfireSkyLayer( model_t *m, const vec3_t origin, int render
 	e->model = m;
 	e->curstate.modelindex = 0;
 	e->curstate.rendermode = rendermode;
-	e->curstate.renderamt = 255;
+	e->curstate.renderamt = renderamt;
 	e->curstate.framerate = 1.0f;
 	VectorCopy( origin, e->origin );
 	VectorCopy( origin, e->curstate.origin );
@@ -265,6 +305,117 @@ static void R_DrawNightfireSkyLayer( model_t *m, const vec3_t origin, int render
 
 /*
 =============
+R_NightfireLightningTick
+
+one retail CloudParameters update (client.dll 0x41001490) for a cloud layer
+=============
+*/
+static void R_NightfireLightningTick( nf_skylayer_t *l )
+{
+	if( !nfworld.lightning )
+	{
+		l->frames = 0;
+		l->flash = false;
+		return;
+	}
+
+	if( l->frames > 0 )
+	{
+		// running flash: the light drifts by random / framesLeft; retail
+		// divides by zero on the last frame (light at infinity)
+		if( --l->frames <= 0 )
+		{
+			l->flash = false;
+			return;
+		}
+
+		l->loffset[0] += gEngfuncs.COM_RandomFloat( -100.0f, 100.0f ) / l->frames;
+		l->loffset[1] += gEngfuncs.COM_RandomFloat( -100.0f, 100.0f ) / l->frames;
+		l->loffset[2] += gEngfuncs.COM_RandomFloat( -25.0f, 25.0f ) / l->frames;
+		return;
+	}
+
+	if( l->lightning <= 0 || gEngfuncs.COM_RandomLong( 0, l->lightning ) >= NF_LIGHTNING_START_ROLL )
+	{
+		l->flash = false;
+		return;
+	}
+
+	l->frames = gEngfuncs.COM_RandomLong( NF_LIGHTNING_MIN_FRAMES, NF_LIGHTNING_MAX_FRAMES );
+	l->loffset[0] = gEngfuncs.COM_RandomFloat( -1000.0f, 1000.0f );
+	l->loffset[1] = gEngfuncs.COM_RandomFloat( -1000.0f, 1000.0f );
+	l->loffset[2] = gEngfuncs.COM_RandomFloat( -50.0f, 50.0f );
+	l->flash = true;
+
+	if( !l->logged )
+	{
+		l->logged = true;
+		gEngfuncs.Con_Reportf( "Nightfire sky lightning: first flash, %d frames\n", l->frames );
+	}
+}
+
+/*
+=============
+R_NightfireLightningUpdate
+
+advance the lightning state machines at a fixed tick rate
+=============
+*/
+static void R_NightfireLightningUpdate( void )
+{
+	int ticks;
+
+	if( !nfworld.cloudlow.lightning && !nfworld.cloudhigh.lightning )
+		return;
+
+	if( nfworld.lightningtime > gp_cl->time )
+		nfworld.lightningtime = gp_cl->time;	// time went backwards (new map / demo)
+
+	ticks = (int)(( gp_cl->time - nfworld.lightningtime ) * NF_LIGHTNING_TICK_RATE );
+	if( ticks <= 0 )
+		return;
+
+	nfworld.lightningtime += ticks / NF_LIGHTNING_TICK_RATE;
+	ticks = Q_min( ticks, NF_LIGHTNING_MAX_TICKS );
+
+	while( ticks-- > 0 )
+	{
+		R_NightfireLightningTick( &nfworld.cloudlow );
+		R_NightfireLightningTick( &nfworld.cloudhigh );
+	}
+}
+
+/*
+=============
+R_DrawNightfireCloudLayer
+
+draw a cloud layer; while its lightning flash is on, add a second additive
+pass whose strength follows the Light1 attenuation 1 / (0.01 * distance)
+=============
+*/
+static void R_DrawNightfireCloudLayer( nf_skylayer_t *l )
+{
+	vec3_t org;
+
+	if( !l->model )
+		return;
+
+	VectorCopy( RI.rvp.vieworigin, org );
+	org[2] += l->zoffset;
+	R_DrawNightfireSkyLayer( l->model, org, kRenderTransAlpha, 255, l->scroll );
+
+	if( l->flash )
+	{
+		float dist = Q_max( VectorLength( l->loffset ), 1.0f );
+		float gain = bound( 0.0f, NF_LIGHTNING_GAIN * 100.0f / dist, 1.0f );
+
+		if( gain > 0.01f )
+			R_DrawNightfireSkyLayer( l->model, org, kRenderTransAdd, (int)( gain * 255.0f ), l->scroll );
+	}
+}
+
+/*
+=============
 R_DrawNightfireSky
 
 draw the sky models (dome around the camera, terrain/ocean at the world
@@ -274,8 +425,6 @@ so the world always covers them
 */
 void R_DrawNightfireSky( void )
 {
-	vec3_t org;
-
 	if( !FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
 		return;
 
@@ -283,34 +432,26 @@ void R_DrawNightfireSky( void )
 		!nfworld.terrain.model && !nfworld.ocean.model )
 		return;
 
+	R_NightfireLightningUpdate();
+
 	R_AllowFog( false );
 
 	// painter order far to near; depth is cleared after the sky anyway
 	if( nfworld.dome )
-		R_DrawNightfireSkyLayer( nfworld.dome, RI.rvp.vieworigin, kRenderNormal, NULL );
+		R_DrawNightfireSkyLayer( nfworld.dome, RI.rvp.vieworigin, kRenderNormal, 255, NULL );
 
 	if( nfworld.terrain.model )
-		R_DrawNightfireSkyLayer( nfworld.terrain.model, vec3_origin, kRenderTransAlpha, NULL );
+		R_DrawNightfireSkyLayer( nfworld.terrain.model, vec3_origin, kRenderTransAlpha, 255, NULL );
 
 	if( nfworld.ocean.model )
-		R_DrawNightfireSkyLayer( nfworld.ocean.model, vec3_origin, kRenderTransAlpha, NULL );
+		R_DrawNightfireSkyLayer( nfworld.ocean.model, vec3_origin, kRenderTransAlpha, 255, NULL );
 
-	if( nfworld.cloudhigh.model )
-	{
-		VectorCopy( RI.rvp.vieworigin, org );
-		org[2] += nfworld.cloudhigh.zoffset;
-		R_DrawNightfireSkyLayer( nfworld.cloudhigh.model, org, kRenderTransAlpha, nfworld.cloudhigh.scroll );
-	}
-
-	if( nfworld.cloudlow.model )
-	{
-		VectorCopy( RI.rvp.vieworigin, org );
-		org[2] += nfworld.cloudlow.zoffset;
-		R_DrawNightfireSkyLayer( nfworld.cloudlow.model, org, kRenderTransAlpha, nfworld.cloudlow.scroll );
-	}
+	R_DrawNightfireCloudLayer( &nfworld.cloudhigh );
+	R_DrawNightfireCloudLayer( &nfworld.cloudlow );
 
 	R_AllowFog( true );
 
 	R_LoadIdentity();
 	pglClear( GL_DEPTH_BUFFER_BIT );
 }
+
