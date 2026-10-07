@@ -26,6 +26,8 @@ static struct
 	int       source;   // may be game, menu, etc
 	double    fade_end; // when nonzero, the track is fading out and stops at this time
 	float     fade_time;
+	double    fade_in_end; // when nonzero, the track is fading in until this time
+	float     fade_in_time;
 } s_bgTrack;
 
 static struct
@@ -36,6 +38,8 @@ static struct
 // James Bond 007: Nightfire front end music: plays through the start-up
 // movies and the menu, stops when a game starts
 #define NF_SOURCE_FRONTEND -1
+// retail GUI_ACTION_MUSIC PLAY ... 0 100 5000 5000: 5 s fade in and out
+#define NF_FRONTEND_FADE   5.0f
 
 /*
 =================
@@ -53,6 +57,11 @@ void S_PrintBackgroundTrackState( void )
 	else if( s_bgTrack.loopName[0] )
 		Con_Printf( "%s [loop]\n", s_bgTrack.loopName );
 	else Con_Printf( "not playing\n" );
+
+	// Nightfire: the fade state of the front end music
+	if( s_bgTrack.stream && ( s_bgTrack.fade_end != 0.0 || s_bgTrack.fade_in_end != 0.0 ))
+		Con_Printf( "BackgroundTrack volume: %.2f of s_musicvolume%s\n", S_GetMusicVolume() / Q_max( s_musicvolume.value, 0.001f ),
+			s_bgTrack.fade_end != 0.0 ? " (fading out)" : host.realtime < s_bgTrack.fade_in_end ? " (fading in)" : "" );
 }
 
 /*
@@ -88,6 +97,9 @@ float S_GetMusicVolume( void )
 
 	if( s_bgTrack.fade_end != 0.0 )
 		scale *= bound( 0.0f, ( s_bgTrack.fade_end - host.realtime ) / s_bgTrack.fade_time, 1.0f );
+
+	if( s_bgTrack.fade_in_end != 0.0 )
+		scale *= bound( 0.0f, 1.0f - ( s_bgTrack.fade_in_end - host.realtime ) / s_bgTrack.fade_in_time, 1.0f );
 
 	return s_musicvolume.value * scale;
 }
@@ -141,7 +153,8 @@ S_StartFrontendMusic
 James Bond 007: Nightfire: the retail main menu, opened under NF_Intro,
 starts sound/music/mission/gui/frontend_ectest.ogg (gui/Scripts/Mainmenu/
 Nightfire.txt), so the music runs during the silent movie and in the menu;
-the 58 s track loops while the menu stays open
+the 58 s track loops while the menu stays open; it fades in over 5 s and
+fades out over 5 s when connecting to a server (S_StreamBackgroundTrack)
 =================
 */
 void S_StartFrontendMusic( const char *path )
@@ -149,12 +162,17 @@ void S_StartFrontendMusic( const char *path )
 	S_StartBackgroundTrack( path, path, 0, true );
 
 	if( s_bgTrack.stream )
+	{
 		s_bgTrack.source = NF_SOURCE_FRONTEND;
+		s_bgTrack.fade_in_time = NF_FRONTEND_FADE;
+		s_bgTrack.fade_in_end = host.realtime + NF_FRONTEND_FADE;
+	}
 }
 
+// a fading out track counts as gone: the menu may start it again
 qboolean S_FrontendMusicActive( void )
 {
-	return s_bgTrack.stream && s_bgTrack.source == NF_SOURCE_FRONTEND;
+	return s_bgTrack.stream && s_bgTrack.source == NF_SOURCE_FRONTEND && s_bgTrack.fade_end == 0.0;
 }
 
 /*
@@ -262,12 +280,12 @@ void S_StreamBackgroundTrack( void )
 
 	if( s_bgTrack.source == NF_SOURCE_FRONTEND )
 	{
-		// the retail menu stops it when a game starts
-		if( cls.state != ca_disconnected && cls.state != ca_cinematic )
-		{
-			S_StopBackgroundTrack();
-			return;
-		}
+		// the retail menu stops it with a fade out when a game starts; a
+		// local game (map, load) stops it at once before (SV_ShutdownGame,
+		// and the load holds the frames), so this fade runs while
+		// connecting to a server
+		if( cls.state != ca_disconnected && cls.state != ca_cinematic && s_bgTrack.fade_end == 0.0 )
+			S_FadeOutBackgroundTrack( NF_FRONTEND_FADE );
 	}
 	else if( !cl.background )
 	{
