@@ -545,8 +545,14 @@ void AVI_OpenVideo( movie_state_t *Avi, const char *filename, qboolean load_audi
 		Avi->audio_stream = AVI_OpenCodecContext( &Avi->audio_ctx, Avi->fmt_ctx, AVMEDIA_TYPE_AUDIO, quiet );
 
 		// audio stream was requested but it wasn't found
+		// James Bond 007: Nightfire: three movies (NF_Intro, ...) have no
+		// audio stream; play them silent instead of not at all
 		if( Avi->audio_stream < 0 )
+		{
+			pav_frame_free( &Avi->aframe );
+			Avi->active = true;
 			return;
+		}
 
 		Avi->channels = Q_min( Avi->audio_ctx->ch_layout.nb_channels, 2 );
 		if( Avi->audio_ctx->sample_fmt == AV_SAMPLE_FMT_U8 || Avi->audio_ctx->sample_fmt == AV_SAMPLE_FMT_U8P )

@@ -413,6 +413,15 @@ static void Cmd_Alias_f( void )
 		return;
 	}
 
+	// James Bond 007: Nightfire's config.cfg aliases the engine commands to
+	// the retail engine's names ("map" -> "Host_Map", "quit" -> "Host_Quit",
+	// ...), which do not exist here and would shadow the real commands
+	if( Cmd_Argc() == 3 && !Q_strnicmp( Cmd_Argv( 2 ), "Host_", 5 ))
+	{
+		Con_Reportf( "alias %s -> %s ignored (retail engine command)\n", s, Cmd_Argv( 2 ));
+		return;
+	}
+
 	// if the alias already exists, reuse it
 	for( a = cmd_alias; a; a = a->next )
 	{

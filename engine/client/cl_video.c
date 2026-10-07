@@ -56,12 +56,30 @@ qboolean SCR_NextMovie( void )
 		return false;
 	}
 
-	Q_snprintf( str, MAX_STRING, "movie %s full\n", cls.movies[cls.movienum] );
+	// James Bond 007: Nightfire: open the next movie right away. Queued as a
+	// "movie" command, the finished one was still active for another frame,
+	// reported its end again and the list advanced twice (EA_logo, MGM_logo,
+	// then the menu instead of NF_Intro)
+	while( cls.movienum < MAX_MOVIES && cls.movies[cls.movienum][0] )
+	{
+		Q_strncpy( str, cls.movies[cls.movienum], sizeof( str ));
+		cls.movienum++;
 
-	Cbuf_InsertText( str );
-	cls.movienum++;
+		if( SCR_PlayCinematic( str ))
+		{
+			// James Bond 007: Nightfire: the silent NF_Intro runs with the
+			// front end music (S_StartFrontendMusic)
+			if( !AVI_HaveAudioTrack( cin_state ) && !S_FrontendMusicActive( ))
+				S_StartFrontendMusic( "sound/music/mission/gui/frontend_ectest.ogg" );
+			return true;
+		}
+	}
 
-	return true;
+	S_StopAllSounds( true );
+	SCR_StopCinematic();
+	cls.movienum = -1;
+	CL_CheckStartupDemos();
+	return false;
 }
 
 static void SCR_CreateStartupVids( void )
@@ -239,6 +257,7 @@ static qboolean SCR_OpenCinematic( const char *arg, qboolean stopsounds )
 			S_StopAllSounds( true );
 		S_StartStreaming();
 	}
+	else S_StopStreaming(); // Nightfire: a silent movie after one with sound (the stream blocked the music)
 
 	AVI_SetParm( cin_state,
 		AVI_RENDER_X, x,

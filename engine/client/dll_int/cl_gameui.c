@@ -1058,6 +1058,11 @@ pfnStartBackgroundTrack
 */
 static void GAME_EXPORT pfnStartBackgroundTrack( const char *introTrack, const char *mainTrack )
 {
+	// James Bond 007: Nightfire: keep the front end music (the menu asks
+	// for media/gamestartup when it is first drawn)
+	if( S_FrontendMusicActive( ))
+		return;
+
 	S_StartBackgroundTrack( introTrack, mainTrack, 0, false );
 }
 

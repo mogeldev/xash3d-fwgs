@@ -33,6 +33,10 @@ static struct
 	float percent;
 } musicfade; // controlled by game dlls
 
+// James Bond 007: Nightfire front end music: plays through the start-up
+// movies and the menu, stops when a game starts
+#define NF_SOURCE_FRONTEND -1
+
 /*
 =================
 S_PrintBackgroundTrackState
@@ -128,6 +132,28 @@ void S_StartBackgroundTrack( const char *introTrack, const char *mainTrack, int 
 		// restore message, update song position
 		FS_SetStreamPos( s_bgTrack.stream, position );
 	}
+}
+
+/*
+=================
+S_StartFrontendMusic
+
+James Bond 007: Nightfire: the retail main menu, opened under NF_Intro,
+starts sound/music/mission/gui/frontend_ectest.ogg (gui/Scripts/Mainmenu/
+Nightfire.txt), so the music runs during the silent movie and in the menu
+=================
+*/
+void S_StartFrontendMusic( const char *path )
+{
+	S_StartBackgroundTrack( path, NULL, 0, true );
+
+	if( s_bgTrack.stream )
+		s_bgTrack.source = NF_SOURCE_FRONTEND;
+}
+
+qboolean S_FrontendMusicActive( void )
+{
+	return s_bgTrack.stream && s_bgTrack.source == NF_SOURCE_FRONTEND;
 }
 
 /*
@@ -233,7 +259,16 @@ void S_StreamBackgroundTrack( void )
 	if( !s_musicvolume.value || cl.paused || snd.stream_paused )
 		return;
 
-	if( !cl.background )
+	if( s_bgTrack.source == NF_SOURCE_FRONTEND )
+	{
+		// the retail menu stops it when a game starts
+		if( cls.state != ca_disconnected && cls.state != ca_cinematic )
+		{
+			S_StopBackgroundTrack();
+			return;
+		}
+	}
+	else if( !cl.background )
 	{
 		// pause music by source type
 		if( s_bgTrack.source == key_game && cls.key_dest == key_menu ) return;

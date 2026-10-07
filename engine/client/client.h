@@ -1163,6 +1163,8 @@ void Mod_ReleaseHullPolygons( void );
 typedef int sound_t;
 void S_StartBackgroundTrack( const char *intro, const char *loop, int position, qboolean fullpath );
 void S_StopBackgroundTrack( void );
+void S_StartFrontendMusic( const char *path );
+qboolean S_FrontendMusicActive( void );
 void S_StreamSetPause( int pause );
 void S_StartStreaming( void );
 void S_StopStreaming( void );
