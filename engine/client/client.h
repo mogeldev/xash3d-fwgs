@@ -502,6 +502,8 @@ typedef struct
 
 	client_textmessage_t *titles;			// title messages, not network messages
 	int		numTitles;
+	client_textmessage_t *mapTitles;		// Nightfire maps/<map>.tit, searched first
+	int		numMapTitles;
 
 	net_request_t	net_requests[MAX_REQUESTS];	// no reason to keep more
 
@@ -872,6 +874,7 @@ void CL_ClearSpriteTextures( void );
 void CL_HudMessage( const char *pMessage );
 void CL_CenterPrint( const char *text, float y );
 client_textmessage_t *CL_TextMessageGet( const char *pName );
+void CL_InitMapTitles( const char *mapname );
 void NetAPI_CancelAllRequests( void );
 model_t *CL_LoadClientSprite( const char *filename );
 model_t *CL_LoadModel( const char *modelname, int *index );

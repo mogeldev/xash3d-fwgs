@@ -596,6 +596,39 @@ static void CL_InitTitles( const char *filename )
 
 /*
 ====================
+CL_InitMapTitles
+
+Nightfire keeps the level texts (objectives, hints, mission
+messages) in maps/<map>.tit, in titles.txt syntax. The retail
+engine (engine.dll 0x430966d0) loads it on every map change
+instead of titles.txt; here it is searched first and titles.txt
+stays as the fallback
+====================
+*/
+void CL_InitMapTitles( const char *mapname )
+{
+	char filename[MAX_QPATH];
+
+	Mem_Free( clgame.mapTitles );
+	clgame.mapTitles = NULL;
+	clgame.numMapTitles = 0;
+
+	if( COM_StringEmpty( mapname ))
+		return;
+
+	Q_snprintf( filename, sizeof( filename ), "maps/%s.tit", mapname );
+
+	fs_offset_t fileSize = 0;
+	char *pMemFile = (char *)FS_LoadFile( filename, &fileSize, false );
+	if( !pMemFile )
+		return;
+
+	clgame.mapTitles = CL_TextMessageParse( clgame.mempool, pMemFile, fileSize, &clgame.numMapTitles );
+	Mem_Free( pMemFile );
+}
+
+/*
+====================
 CL_HudMessage
 
 Template to show hud messages
@@ -1925,7 +1958,13 @@ client_textmessage_t *CL_TextMessageGet( const char *pName )
 			return cl_textmessage + i;
 	}
 
-	// find desired message
+	// find desired message, the level texts first
+	for( i = 0; i < clgame.numMapTitles; i++ )
+	{
+		if( !Q_stricmp( pName, clgame.mapTitles[i].pName ))
+			return clgame.mapTitles + i;
+	}
+
 	for( i = 0; i < clgame.numTitles; i++ )
 	{
 		if( !Q_stricmp( pName, clgame.titles[i].pName ))

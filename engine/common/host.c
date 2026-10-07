@@ -82,7 +82,7 @@ static CVAR_DEFINE_AUTO( host_sleeptime_debug, "0", 0, "print sleeps between fra
 // James Bond 007: Nightfire port diagnostics, a bit mask (see AGENTS.md of the
 // project repo): 1 weapons / prediction, 2 decals / materials, 4 monster
 // spawn / stuck. Only prints, never changes behaviour; read by the game DLLs
-CVAR_DEFINE_AUTO( nf_debug, "0", 0, "Nightfire port diagnostics bit mask: 1 weapons, 2 decals, 4 monsters" );
+CVAR_DEFINE_AUTO( nf_debug, "0", 0, "Nightfire port diagnostics bit mask: 1 weapons, 2 decals, 4 monsters, 8 triggers" );
 CVAR_DEFINE_AUTO( host_allow_materials, "0", FCVAR_LATCH|FCVAR_ARCHIVE, "allow texture replacements from materials/ folder" );
 CVAR_DEFINE( con_gamemaps, "con_mapfilter", "1", FCVAR_ARCHIVE, "when true show only maps in game folder" );
 CVAR_DEFINE_AUTO( cl_background, "0", FCVAR_READ_ONLY, "if set to 1, client running a background map" );

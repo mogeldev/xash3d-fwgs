@@ -887,6 +887,8 @@ static void CL_ParseServerData( sizebuf_t *msg, connprotocol_t proto )
 		}
 	}
 
+	CL_InitMapTitles( clgame.mapname );
+
 	if( clgame.maxModels > MAX_MODELS )
 		Con_Printf( S_WARN "server model limit is above client model limit %i > %i\n", clgame.maxModels, MAX_MODELS );
 
