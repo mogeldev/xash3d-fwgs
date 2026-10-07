@@ -24,6 +24,7 @@ GNU General Public License for more details.
 
 #include <errno.h>
 #include "common.h"
+#include "nf_prof.h"
 #include "library.h"
 #include "platform/platform.h"
 
@@ -55,11 +56,30 @@ int FS_Close( file_t *file )
 
 file_t *FS_Open( const char *filepath, const char *mode, qboolean gamedironly )
 {
+	// nf_prof: which files a slow frame read
+	if( nf_prof.value && mode && mode[0] == 'r' )
+	{
+		double start = Platform_DoubleTime();
+		file_t *f = g_fsapi.Open( filepath, mode, gamedironly );
+
+		NF_ProfFileLoad( filepath, start, f != NULL );
+		return f;
+	}
+
 	return g_fsapi.Open( filepath, mode, gamedironly );
 }
 
 byte *FS_LoadFile( const char *path, fs_offset_t *filesizeptr, qboolean gamedironly )
 {
+	if( nf_prof.value )
+	{
+		double start = Platform_DoubleTime();
+		byte *data = g_fsapi.LoadFile( path, filesizeptr, gamedironly );
+
+		NF_ProfFileLoad( path, start, data != NULL );
+		return data;
+	}
+
 	return g_fsapi.LoadFile( path, filesizeptr, gamedironly );
 }
 

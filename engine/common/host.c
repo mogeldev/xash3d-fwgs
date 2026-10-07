@@ -25,6 +25,7 @@ GNU General Public License for more details.
 #include <emscripten/emscripten.h>
 #endif
 #include "common.h"
+#include "nf_prof.h"
 #include "base_cmd.h"
 #include "client.h"
 #include "server.h"
@@ -681,16 +682,33 @@ void Host_Frame( double time )
 	if( host.framecount == 0 )
 		Con_DPrintf( "Time to first frame: %.3f seconds\n", t1 - host.starttime );
 
+	if( nf_prof.value )
+	{
+		int state = NFP_STATE_OTHER;
+#if !XASH_DEDICATED
+		if( cls.state == ca_cinematic || SCR_InGameMovieActive( ))
+			state = NFP_STATE_MOVIE;
+		else if( cls.state == ca_active && cls.key_dest == key_game )
+			state = NFP_STATE_GAME;
+#endif
+		NF_ProfFrameBegin( state );
+	}
+
+	NFP_BEGIN( NFP_INPUT );
 	Host_InputFrame ();  // input frame
 	Host_ClientBegin (); // begin client
 	Host_GetCommands (); // dedicated in
+	NFP_END( NFP_INPUT );
+	NFP_BEGIN( NFP_SERVER );
 	Host_ServerFrame (); // server frame
+	NFP_END( NFP_SERVER );
 	Host_ClientFrame (); // client frame
 	HTTP_Run();			 // both server and client
 	XRcon_Frame();
 
 	host.framecount++;
 	host.pureframetime = Platform_DoubleTime() - t1;
+	NF_ProfFrameEnd();
 }
 
 /*
@@ -1219,6 +1237,7 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
 	Cvar_RegisterVariable( &host_sleeptime );
 	Cvar_RegisterVariable( &host_sleeptime_debug );
 	Cvar_RegisterVariable( &nf_debug );
+	NF_ProfInit();
 	Cvar_RegisterVariable( &host_gameloaded );
 	Cvar_RegisterVariable( &host_clientloaded );
 	Cvar_RegisterVariable( &host_limitlocal );

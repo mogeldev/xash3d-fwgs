@@ -14,6 +14,7 @@ GNU General Public License for more details.
 */
 
 #include "common.h"
+#include "nf_prof.h"
 #include "client.h"
 #include "vgui_draw.h"
 #include "qfont.h"
@@ -688,7 +689,11 @@ void SCR_UpdateScreen( void )
 	case ca_active:
 		Con_RunConsole ();
 		if( !SCR_DrawInGameMovie( ))
+		{
+			NFP_BEGIN( NFP_WORLD );
 			V_RenderView();
+			NFP_END( NFP_WORLD );
+		}
 		break;
 	case ca_cinematic:
 		SCR_DrawCinematic();

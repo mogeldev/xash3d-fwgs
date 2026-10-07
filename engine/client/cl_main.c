@@ -15,6 +15,7 @@ GNU General Public License for more details.
 
 #include <inttypes.h>
 #include "common.h"
+#include "nf_prof.h"
 #include "client.h"
 #include "net_encode.h"
 #include "cl_tent.h"
@@ -3914,25 +3915,33 @@ void Host_ClientFrame( void )
 
 	// if running the server remotely, send intentions now after
 	// the incoming messages have been read
+	NFP_BEGIN( NFP_NET );
 	if( !SV_Active( )) CL_SendCommand ();
+	NFP_END( NFP_NET );
 
+	NFP_BEGIN( NFP_CLDLL );
 	clgame.dllFuncs.pfnFrame( host.frametime );
+	NFP_END( NFP_CLDLL );
 
 	// remember last received framenum
 	CL_SetLastUpdate ();
 
 	// read updates from server
+	NFP_BEGIN( NFP_NET );
 	CL_ReadPackets ();
 
 	// do prediction again in case we got
 	// a new portion updates from server
 	CL_RedoPrediction ();
+	NFP_END( NFP_NET );
 
 	// update voice
 	Voice_Idle( host.frametime );
 
 	// emit visible entities
+	NFP_BEGIN( NFP_EMIT );
 	CL_EmitEntities ();
+	NFP_END( NFP_EMIT );
 
 	// in case we lost connection
 	CL_CheckForResend ();
@@ -3953,7 +3962,9 @@ void Host_ClientFrame( void )
 	SCR_UpdateScreen ();
 
 	// update audio
+	NFP_BEGIN( NFP_SOUND );
 	SND_UpdateSound ();
+	NFP_END( NFP_SOUND );
 
 	// play avi-files
 	SCR_RunCinematic ();

@@ -18,6 +18,7 @@ GNU General Public License for more details.
 #include "defaults.h"
 #include "common.h"
 #include "client.h"
+#include "nf_prof.h"
 
 static qboolean avi_initialized;
 static poolhandle_t avi_mempool;
@@ -345,6 +346,7 @@ qboolean AVI_Think( movie_state_t *Avi )
 	qboolean decoded = false;
 	qboolean flushing = false;
 	qboolean redraw = false;
+	int vframes = 0; // nf_prof: video frames decoded in this call
 
 	if( !Avi->video_ctx )
 		return false;
@@ -418,6 +420,7 @@ qboolean AVI_Think( movie_state_t *Avi )
 		{
 			Avi->last_time = Avi->first_time + Avi->vframe->best_effort_timestamp;
 			decoded = true;
+			vframes++;
 
 			if( FBitSet( Avi->vframe->flags, AV_FRAME_FLAG_CORRUPT|AV_FRAME_FLAG_DISCARD ))
 				continue;
@@ -430,6 +433,9 @@ qboolean AVI_Think( movie_state_t *Avi )
 				redraw = true;
 		}
 	}
+
+	if( nf_prof.value && Avi == AVI_GetState( CIN_MAIN ))
+		NF_ProfMovieFrames( vframes, redraw );
 
 	if( redraw )
 	{

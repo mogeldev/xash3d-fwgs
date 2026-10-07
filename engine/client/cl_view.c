@@ -14,6 +14,7 @@ GNU General Public License for more details.
 */
 
 #include "common.h"
+#include "nf_prof.h"
 #include "client.h"
 #include "const.h"
 #include "entity_types.h"
@@ -534,6 +535,7 @@ void V_PostRender( void )
 {
 	qboolean		draw_2d = false;
 
+	NFP_BEGIN( NFP_2D );
 	ref.dllFuncs.R_AllowFog( false );
 	ref.dllFuncs.R_Set2DMode( true );
 
@@ -578,10 +580,21 @@ void V_PostRender( void )
 		S_ExtraUpdate();
 	}
 
-	SCR_MakeScreenShot();
+	if( cls.scrshot_action != scrshot_inactive )
+	{
+		NFP_END( NFP_2D );
+		NFP_BEGIN( NFP_SHOT );
+		SCR_MakeScreenShot();
+		NFP_END( NFP_SHOT );
+		NFP_BEGIN( NFP_2D );
+	}
+	else SCR_MakeScreenShot();
 	ref.dllFuncs.R_AllowFog( true );
 	Platform_SetTimer( 0.0f );
+	NFP_END( NFP_2D );
+	NFP_BEGIN( NFP_SWAP );
 	ref.dllFuncs.R_EndFrame();
+	NFP_END( NFP_SWAP );
 
 	V_CheckGammaEnd();
 }

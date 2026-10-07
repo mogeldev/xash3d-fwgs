@@ -14,6 +14,7 @@ GNU General Public License for more details.
 */
 
 #include "common.h"
+#include "nf_prof.h"
 #include "client.h"
 
 /*
@@ -196,7 +197,11 @@ qboolean SCR_DrawCinematic( void )
 	ref.dllFuncs.GL_SetRenderMode( kRenderNormal );
 	ref.dllFuncs.R_DrawStretchPic( 0, 0, refState.width, refState.height, 0, 0, 1, 1, R_GetBuiltinTexture( REF_BLACK_TEXTURE ));
 
-	if( !AVI_Think( cin_state ))
+	NFP_BEGIN( NFP_MOVIE );
+	qboolean playing = AVI_Think( cin_state );
+	NFP_END( NFP_MOVIE );
+
+	if( !playing )
 		return SCR_NextMovie();
 
 	return true;
@@ -414,7 +419,11 @@ qboolean SCR_DrawInGameMovie( void )
 	ref.dllFuncs.GL_SetRenderMode( kRenderNormal );
 	ref.dllFuncs.R_DrawStretchPic( 0, 0, refState.width, refState.height, 0, 0, 1, 1, R_GetBuiltinTexture( REF_BLACK_TEXTURE ));
 
-	if( !AVI_Think( cin_state ))
+	NFP_BEGIN( NFP_MOVIE );
+	qboolean playing = AVI_Think( cin_state );
+	NFP_END( NFP_MOVIE );
+
+	if( !playing )
 	{
 		SCR_StopInGameMovie();
 		return false;
