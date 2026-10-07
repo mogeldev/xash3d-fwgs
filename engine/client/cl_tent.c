@@ -3010,6 +3010,42 @@ int GAME_EXPORT CL_DecalIndex( int id )
 		}
 
 		if( !gl_texturenum )
+		{
+			string decalname;
+
+			// Nightfire decals (Host_InitDecals): textures/decals/<name>.png
+			if( Q_snprintf( decalname, sizeof( decalname ), "textures/decals/%s.png", host.draw_decals[id] ) > 0
+				&& g_fsapi.FileExists( decalname, false ))
+			{
+				gl_texturenum = ref.dllFuncs.GL_LoadTexture( decalname, NULL, 0, TF_DECAL );
+				if( gl_texturenum )
+				{
+					// the retail client shoots impact decals with a per-material
+					// scale (client.dll 0x4105319c..): world size = image size * scale
+					static const struct { const char *prefix; float scale; } nfscale[] =
+					{
+						{ "{d_metal_", 0.08f }, { "{d_stone_", 0.1f }, { "{d_plaster_", 0.1f },
+						{ "{d_generic_", 0.12f }, { "{d_wood_", 0.12f }, { "{d_carpet_", 0.12f },
+						{ "{d_grass_", 0.17f }, { "{d_glass_", 0.3f }, { "{d_snow_", 0.4f },
+						{ "{d_sand_", 0.4f }, { "{d_dirt_", 0.4f },
+					};
+
+					for( size_t k = 0; k < ARRAYSIZE( nfscale ); k++ )
+					{
+						if( Q_strnicmp( host.draw_decals[id], nfscale[k].prefix, Q_strlen( nfscale[k].prefix )))
+							continue;
+
+						int w = REF_GET_PARM( PARM_TEX_SRC_WIDTH, gl_texturenum );
+						int h = REF_GET_PARM( PARM_TEX_SRC_HEIGHT, gl_texturenum );
+						ref.dllFuncs.R_OverrideTextureSourceSize( gl_texturenum,
+							Q_max( 1, (int)( w * nfscale[k].scale + 0.5f )), Q_max( 1, (int)( h * nfscale[k].scale + 0.5f )));
+						break;
+					}
+				}
+			}
+		}
+
+		if( !gl_texturenum )
 			gl_texturenum = ref.dllFuncs.GL_LoadTexture( host.draw_decals[id], NULL, 0, TF_DECAL );
 
 		cl.decal_index[id] = gl_texturenum;

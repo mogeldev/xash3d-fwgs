@@ -2156,6 +2156,8 @@ static void Mod_SetupSubmodels( model_t *mod, dbspmodel_t *bmod )
 	const char *name = mod->name;
 	model_t *world = mod; // submodels might want to share hulls
 
+	const hull_t world_hull0 = mod->hulls[0];
+
 	mod->numframes = 2;	// regular and alternate animation
 
 	// set up the submodels
@@ -2163,15 +2165,37 @@ static void Mod_SetupSubmodels( model_t *mod, dbspmodel_t *bmod )
 	{
 		dmodel_t *bm = &mod->submodels[i];
 
-		// hull 0 is just shared across all bmodels
-		mod->hulls[0].firstclipnode = bm->headnode[0];
-		mod->hulls[0].lastclipnode = bm->headnode[0]; // need to be real count
+		mod->hulls[0] = world_hull0;
 
-		// counting a real number of clipnodes per each submodel
-		if( bmod->hulls32bit )
-			CountClipNodes32_r( mod->hulls[0].clipnodes32, &mod->hulls[0], bm->headnode[0] );
+		// James Bond 007: Nightfire brush models have no render nodes; the
+		// BSP42 converter stores the root of an unexpanded clip tree (built
+		// from the model's brushes) as headnode[0] = -2 - root
+		if( i != 0 && bm->headnode[0] <= -2 )
+		{
+			const int root = -2 - bm->headnode[0];
+			hull_t *hull = &mod->hulls[0];
+
+			// always remapped to a local array rooted at 0: the renderer and
+			// PM_TraceSurface also use hulls[0].firstclipnode as a node index
+			// (the world root, as before, for these node-less models)
+			VectorClear( hull->clip_mins );
+			VectorClear( hull->clip_maxs );
+			hull->firstclipnode = hull->lastclipnode = 0;
+			if( root < mod->numclipnodes )
+				Mod_RemapClipNodes( bmod, mod, world, hull, root );
+		}
 		else
-			CountClipNodes16_r( mod->hulls[0].clipnodes16, &mod->hulls[0], bm->headnode[0] );
+		{
+			// hull 0 is just shared across all bmodels
+			mod->hulls[0].firstclipnode = bm->headnode[0];
+			mod->hulls[0].lastclipnode = bm->headnode[0]; // need to be real count
+
+			// counting a real number of clipnodes per each submodel
+			if( bmod->hulls32bit )
+				CountClipNodes32_r( mod->hulls[0].clipnodes32, &mod->hulls[0], bm->headnode[0] );
+			else
+				CountClipNodes16_r( mod->hulls[0].clipnodes16, &mod->hulls[0], bm->headnode[0] );
+		}
 
 		// but hulls1-3 is build individually for a each given submodel
 		for( int j = 1; j < MAX_MAP_HULLS; j++ )
@@ -2927,6 +2951,104 @@ static const char *Mod_NightfireTexturePath( model_t *mod, int index )
 	}
 }
 #endif // !XASH_DEDICATED
+
+/*
+=================
+Mod_TextureName
+
+Name of a brush texture for the game DLLs (TraceTexture). On a translated
+Nightfire map the miptex names are the texture paths cut to 15 characters;
+return the full path from the worldspawn "_nftexN" keys instead (index-aligned
+with the miptex list), so the game can match its material lists
+(sound/debris.txt, sound/materials.txt). Brush entities share the world's
+texture array, so the world model resolves every brush texture.
+=================
+*/
+static const char *g_texname_entities = NULL;	// reset by every brush model load
+
+const char *Mod_TextureName( model_t *world, const texture_t *tx )
+{
+	static char *s_table = NULL;	// the concatenated paths, ' ' separated
+	static int *s_offsets = NULL;
+	static int s_count = 0;
+	static char s_name[MAX_QPATH];
+	int i;
+
+	if( !tx )
+		return NULL;
+
+	if( !world || !world->entities || !world->textures )
+		return tx->name;
+
+	if( g_texname_entities != world->entities )
+	{
+		size_t len = 0, cap = 0;
+
+		g_texname_entities = world->entities;
+		s_count = 0;
+		if( s_table ) { Mem_Free( s_table ); s_table = NULL; }
+		if( s_offsets ) { Mem_Free( s_offsets ); s_offsets = NULL; }
+
+		for( int n = 0; ; n++ )
+		{
+			char key[24];
+			const char *p, *e;
+			size_t vlen;
+
+			Q_snprintf( key, sizeof( key ), "\"_nftex%d\"", n );
+			p = Q_strstr( world->entities, key );
+			if( !p || !( p = Q_strchr( p + Q_strlen( key ), '"' )) || !( e = Q_strchr( ++p, '"' )))
+				break;
+
+			vlen = (size_t)( e - p );
+			if( len + vlen + 2 > cap )
+			{
+				cap = ( len + vlen + 2 ) * 2;
+				s_table = s_table ? Mem_Realloc( host.mempool, s_table, cap ) : Mem_Malloc( host.mempool, cap );
+			}
+			if( len ) s_table[len++] = ' ';
+			memcpy( s_table + len, p, vlen );
+			len += vlen;
+			s_table[len] = '\0';
+		}
+
+		if( s_table )
+		{
+			char *p = s_table;
+
+			s_offsets = Mem_Malloc( host.mempool, sizeof( int ) * ( len / 2 + 2 ));
+			while( *p )
+			{
+				while( *p == ' ' ) p++;
+				if( !*p ) break;
+				s_offsets[s_count++] = (int)( p - s_table );
+				while( *p && *p != ' ' ) p++;
+			}
+		}
+	}
+
+	if( !s_count )
+		return tx->name;	// not a Nightfire map
+
+	for( i = 0; i < world->numtextures && i < s_count; i++ )
+	{
+		if( world->textures[i] == tx )
+		{
+			const char *p = s_table + s_offsets[i];
+			size_t n = 0;
+
+			while( p[n] && p[n] != ' ' && n < sizeof( s_name ) - 1 )
+			{
+				s_name[n] = p[n];
+				n++;
+			}
+			s_name[n] = '\0';
+			return s_name;
+		}
+	}
+
+	return tx->name;
+}
 
 static void Mod_LoadTextureData( model_t *mod, dbspmodel_t *bmod, int textureIndex )
 {
@@ -4605,6 +4727,7 @@ void Mod_LoadBrushModel( model_t *mod, void *buffer, size_t buffersize, qboolean
 	Q_snprintf( poolname, sizeof( poolname ), "^2%s^7", mod->name );
 
 	if( loaded ) *loaded = false;
+	g_texname_entities = NULL;	// Mod_TextureName rebuilds its path list
 
 	// James Bond 007: Nightfire (PC) uses a heavily modified BSP (version 42).
 	// Translate it to BSP30 in memory so the rest of the engine can load it

@@ -836,7 +836,7 @@ const char *PM_TraceTexture( playermove_t *pmove, int ground, float *vstart, flo
 	if( !surf || !surf->texinfo || !surf->texinfo->texture )
 		return NULL;
 
-	return surf->texinfo->texture->name;
+	return Mod_TextureName( pmove->physents[0].model, surf->texinfo->texture );
 }
 
 int PM_PointContentsPmove( playermove_t *pmove, const float *p, int *truecontents )

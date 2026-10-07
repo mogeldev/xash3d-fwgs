@@ -2728,6 +2728,11 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	// by chaining each brush's planes (front -> next brush, back -> next plane,
 	// last back -> CONTENTS_SOLID). Expansion offsets each plane outward by the
 	// hull's support (Minkowski sum with the hull bbox).
+	// Hull 0 (point traces: bullets, decals, line of sight) gets the same tree
+	// unexpanded: Nightfire brush models have no render nodes, and a BSP30
+	// headnode[0] of 0 would be the world's root node, offset by the entity
+	// origin (a door with an origin was solid everywhere). Its root is stored
+	// as headnode[0] = -2 - root; Mod_SetupSubmodels reads it back.
 	{
 		static const float hmins[4][3] = { {0,0,0}, {-16,-16,-36}, {-32,-32,-32}, {-16,-16,-18} };
 		static const float hmaxs[4][3] = { {0,0,0}, {16,16,36}, {32,32,32}, {16,16,18} };
@@ -2768,11 +2773,11 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 				}
 			}
 
-			// skip a model whose three hulls would overflow 16-bit clipnodes
+			// skip a model whose four hulls would overflow the clipnode budget
 			{
 				int need = 0;
 				for( int k = 0; k < cnt; k++ )
-					need += 3 * rd_i32( L[15] + order[k] * 12 + 8 );
+					need += 4 * rd_i32( L[15] + order[k] * 12 + 8 );
 				if( (int)( lumps[9].len / 12 ) + need > 500000 )
 				{
 					for( int k = 0; k < cnt; k++ ) seen[order[k]] = 0;
@@ -2780,7 +2785,7 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 				}
 			}
 
-			for( int hull = 1; hull <= 3; hull++ )
+			for( int hull = 0; hull <= 3; hull++ )
 			{
 				int start = (int)( lumps[9].len / 12 );
 				int rest = -1;	// CONTENTS_EMPTY
@@ -2829,7 +2834,10 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 				{
 					int end = (int)( lumps[9].len / 12 );
 					nfh_reverse_clipblock( &lumps[9], start, end );
-					om[mi].headnode[hull] = ( end > start ) ? start : 0;
+					if( hull == 0 )
+						om[mi].headnode[0] = ( end > start ) ? -2 - start : 0;
+					else
+						om[mi].headnode[hull] = ( end > start ) ? start : 0;
 				}
 			}
 

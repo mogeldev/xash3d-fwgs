@@ -468,6 +468,18 @@ static void Host_InitDecals( void )
 	}
 
 	if( t ) Mem_Free( t );
+
+	// James Bond 007: Nightfire keeps its decals as images in
+	// textures/decals/ ("{d_metal_01.png", ...); CL_DecalIndex loads them
+	t = FS_Search( "textures/decals/*.png", true, false );
+
+	for( int i = 0; t && i < t->numfilenames; i++ )
+	{
+		if( !Host_RegisterDecal( t->filenames[i], &num_decals ))
+			break;
+	}
+
+	if( t ) Mem_Free( t );
 	Con_Reportf( "%s: %i decals\n", __func__, num_decals );
 }
 

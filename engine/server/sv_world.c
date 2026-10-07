@@ -1434,7 +1434,7 @@ const char *SV_TraceTexture( edict_t *ent, const vec3_t start, const vec3_t end 
 	if( !surf || !surf->texinfo || !surf->texinfo->texture )
 		return NULL;
 
-	return surf->texinfo->texture->name;
+	return Mod_TextureName( sv.worldmodel, surf->texinfo->texture );
 }
 
 /*

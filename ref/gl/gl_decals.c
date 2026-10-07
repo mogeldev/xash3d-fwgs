@@ -675,12 +675,8 @@ static void R_DecalSurface( msurface_t *surf, decalinfo_t *decalinfo )
 //-----------------------------------------------------------------------------
 // iterate over all surfaces on a node, looking for surfaces to decal
 //-----------------------------------------------------------------------------
-static void R_DecalNodeSurfaces( model_t *model, mnode_t *node, decalinfo_t *decalinfo )
+static void R_DecalSurfaceList( model_t *model, int firstsurface, int numsurfaces, decalinfo_t *decalinfo )
 {
-	// iterate over all surfaces in the node
-	int firstsurface = node_firstsurface( node, model );
-	int numsurfaces  = node_numsurfaces( node, model );
-
 	msurface_t *surf = model->surfaces + firstsurface;
 
 	for( int i = 0; i < numsurfaces; i++, surf++ )
@@ -689,11 +685,27 @@ static void R_DecalNodeSurfaces( model_t *model, mnode_t *node, decalinfo_t *dec
 		if( surf->flags & (SURF_DRAWTURB|SURF_DRAWSKY|SURF_CONVEYOR))
 			continue;
 
+		// the surface's own plane, not the node's: James Bond 007:
+		// Nightfire maps file a surface under the lowest common ancestor
+		// of the leaves listing it, usually off its plane (GoldSrc node
+		// surfaces lie on the node plane, so nothing changes there)
+		{
+			float sdist = DotProduct( decalinfo->m_Position, surf->plane->normal ) - surf->plane->dist;
+			if( sdist >= DECAL_DISTANCE || sdist <= -DECAL_DISTANCE )
+				continue;
+		}
+
 		if( surf->flags & SURF_TRANSPARENT && !glState.stencilEnabled )
 			continue;
 
 		R_DecalSurface( surf, decalinfo );
 	}
+}
+
+static void R_DecalNodeSurfaces( model_t *model, mnode_t *node, decalinfo_t *decalinfo )
+{
+	// iterate over all surfaces in the node
+	R_DecalSurfaceList( model, node_firstsurface( node, model ), node_numsurfaces( node, model ), decalinfo );
 }
 
 //-----------------------------------------------------------------------------
@@ -712,6 +724,10 @@ static void R_DecalNode( model_t *model, mnode_t *node, decalinfo_t *decalinfo )
 	mplane_t *splitplane = node->plane;
 	float dist = DotProduct( decalinfo->m_Position, splitplane->normal ) - splitplane->dist;
 
+	// every node on the way: its surfaces are checked against their own
+	// planes (see R_DecalNodeSurfaces)
+	R_DecalNodeSurfaces( model, node, decalinfo );
+
 	if( dist > decalinfo->m_Size )
 	{
 		R_DecalNode( model, node_child( node, 0, model ), decalinfo );
@@ -722,9 +738,6 @@ static void R_DecalNode( model_t *model, mnode_t *node, decalinfo_t *decalinfo )
 	}
 	else
 	{
-		if( dist < DECAL_DISTANCE && dist > -DECAL_DISTANCE )
-			R_DecalNodeSurfaces( model, node, decalinfo );
-
 		R_DecalNode( model, node_child( node, 0, model ), decalinfo );
 		R_DecalNode( model, node_child( node, 1, model ), decalinfo );
 	}
@@ -816,7 +829,12 @@ void R_DecalShoot( int textureIndex, int entityIndex, int modelIndex, vec3_t pos
 	decalInfo.m_decalWidth = width / decalInfo.m_scale;
 	decalInfo.m_decalHeight = height / decalInfo.m_scale;
 
-	R_DecalNode( model, &model->nodes[hull->firstclipnode], &decalInfo );
+	// brush entities: their own surfaces (James Bond 007: Nightfire brush
+	// models have no nodes of their own; a GoldSrc submodel's node tree holds
+	// exactly these surfaces)
+	if( model != CL_ModelHandle( 1 ))
+		R_DecalSurfaceList( model, model->firstmodelsurface, model->nummodelsurfaces, &decalInfo );
+	else R_DecalNode( model, &model->nodes[hull->firstclipnode], &decalInfo );
 }
 
 // Build the vertex list for a decal on a surface and clip it to the surface.
