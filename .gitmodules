@@ -1,6 +1,7 @@
 [submodule "mainui"]
 	path = 3rdparty/mainui
-	url = https://github.com/FWGS/mainui_cpp
+	url = https://github.com/mogeldev/mainui_cpp
+	branch = nightfire
 [submodule "ref_gl/nanogl"]
 	path = 3rdparty/nanogl
 	url = https://github.com/FWGS/nanogl

@@ -1298,6 +1298,37 @@ static int pfnIsCvarReadOnly( const char *name )
 	return FBitSet( cv->flags, FCVAR_READ_ONLY ) ? 1 : 0;
 }
 
+static void pfnPIC_DrawRotated( float cx, float cy, float w, float h, float degrees, int additive )
+{
+	static triangleapi_t tri;
+	float c, s, hw = w * 0.5f, hh = h * 0.5f;
+	const float u[4] = { 0.0f, 1.0f, 1.0f, 0.0f };
+	const float v[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+	const float cornerx[4] = { -hw, hw, hw, -hw };
+	const float cornery[4] = { -hh, -hh, hh, hh };
+
+	if( !tri.TexCoord2f )
+		ref.dllFuncs.R_FillTriAPI( &tri );
+
+	if( !tri.TexCoord2f )
+		return;
+
+	c = cosf( degrees * ( M_PI_F / 180.0f ));
+	s = sinf( degrees * ( M_PI_F / 180.0f ));
+
+	ref.dllFuncs.GL_SetRenderMode( additive ? kRenderTransAdd : kRenderTransTexture );
+	ref.dllFuncs.GL_Bind( XASH_TEXTURE0, gameui.ds.gl_texturenum );
+
+	ref.dllFuncs.Begin( TRI_QUADS );
+	for( int i = 0; i < 4; i++ )
+	{
+		tri.TexCoord2f( u[i], v[i] );
+		ref.dllFuncs.Vertex3f( cx + cornerx[i] * c - cornery[i] * s, cy + cornerx[i] * s + cornery[i] * c, 0.0f );
+	}
+	ref.dllFuncs.End();
+	ref.dllFuncs.Color4ub( 255, 255, 255, 255 );
+}
+
 static ui_extendedfuncs_t gExtendedfuncs =
 {
 	pfnEnableTextInput,
@@ -1315,6 +1346,7 @@ static ui_extendedfuncs_t gExtendedfuncs =
 	pfnGetModInfo,
 	pfnIsCvarReadOnly,
 	pfnSetTextInputRect,
+	pfnPIC_DrawRotated,
 };
 
 void UI_UnloadProgs( void )

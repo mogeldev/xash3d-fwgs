@@ -234,6 +234,10 @@ typedef struct ui_extendedfuncs_s {
 	// engine tries to keep this rect visible, when the on-screen keyboard covers the screen
 	// must be called before pfnEnableTextInput( true ), empty rect means the whole screen
 	void (*pfnSetTextInputRect)( int x, int y, int w, int h );
+
+	// Nightfire: draws the picture and colour set with pfnPIC_Set as a quad
+	// of w x h centred on (cx, cy), rotated clockwise by degrees
+	void (*pfnPIC_DrawRotated)( float cx, float cy, float w, float h, float degrees, int additive );
 } ui_extendedfuncs_t;
 
 // deprecated export from old engine
