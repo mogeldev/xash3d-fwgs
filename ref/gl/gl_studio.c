@@ -117,6 +117,8 @@ typedef struct
 	GLubyte			arraycolor[MAXSTUDIOVERTS][4];
 	uint			numverts;
 	uint			numelems;
+	uint			startverts;	// first array vertex / element of the mesh being built
+	uint			startelems;
 } studio_draw_state_t;
 
 // studio-related cvars
@@ -1740,6 +1742,33 @@ static int R_StudioBuildIndices( qboolean tri_strip, int vertexState )
 	return vertexState;
 }
 
+static void R_StudioDrawArrays( uint startverts, uint startelems );
+
+/*
+===============
+R_StudioReserveArrays
+
+Nightfire models need more array vertices in one mesh than the arrays hold
+(every triangle is its own 3-vertex command: tower_holo.mdl 19983, the
+water models up to 44133, MAXSTUDIOVERTS is 16384): draw what is built so
+far and start over instead of writing past the arrays. False for a single
+command that can never fit (skipped).
+===============
+*/
+static qboolean R_StudioReserveArrays( int count )
+{
+	if( count > MAXSTUDIOVERTS )
+		return false;
+
+	if( g_studio.numverts + count > MAXSTUDIOVERTS )
+	{
+		R_StudioDrawArrays( g_studio.startverts, g_studio.startelems );
+		g_studio.numverts = g_studio.numelems = 0;
+		g_studio.startverts = g_studio.startelems = 0;
+	}
+	return true;
+}
+
 /*
 ===============
 R_StudioDrawNormalMesh
@@ -1760,6 +1789,12 @@ static void R_StudioBuildArrayNormalMesh( short *ptricmds, vec3_t *pstudionorms,
 		{
 			tri_strip = false;
 			i = -i;
+		}
+
+		if( !R_StudioReserveArrays( i ))
+		{
+			ptricmds += 4 * i;
+			continue;
 		}
 
 		for( ; i > 0; i--, ptricmds += 4 )
@@ -1801,6 +1836,12 @@ static void R_StudioBuildArrayFloatMesh( short *ptricmds, vec3_t *pstudionorms )
 			i = -i;
 		}
 
+		if( !R_StudioReserveArrays( i ))
+		{
+			ptricmds += 4 * i;
+			continue;
+		}
+
 		for( ; i > 0; i--, ptricmds += 4 )
 		{
 			GLubyte *cl = g_studio.arraycolor[g_studio.numverts];
@@ -1839,6 +1880,12 @@ static void R_StudioBuildArrayChromeMesh( short *ptricmds, vec3_t *pstudionorms,
 		{
 			tri_strip = false;
 			i = -i;
+		}
+
+		if( !R_StudioReserveArrays( i ))
+		{
+			ptricmds += 4 * i;
+			continue;
 		}
 
 		for( ; i > 0; i--, ptricmds += 4 )
@@ -1917,8 +1964,8 @@ static void R_StudioSubmitMesh( short *ptricmds, vec3_t *pstudionorms, float s, 
 	}
 	else if( r_studio_drawelements.value )
 	{
-		uint startArrayVerts = g_studio.numverts;
-		uint startArrayElems = g_studio.numelems;
+		g_studio.startverts = g_studio.numverts;
+		g_studio.startelems = g_studio.numelems;
 
 		if( FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
 			R_StudioBuildArrayChromeMesh( ptricmds, pstudionorms, s, t, shellscale );
@@ -1927,7 +1974,7 @@ static void R_StudioSubmitMesh( short *ptricmds, vec3_t *pstudionorms, float s, 
 		else
 			R_StudioBuildArrayNormalMesh( ptricmds, pstudionorms, s, t );
 
-		R_StudioDrawArrays( startArrayVerts, startArrayElems );
+		R_StudioDrawArrays( g_studio.startverts, g_studio.startelems );
 	}
 	else
 	{
