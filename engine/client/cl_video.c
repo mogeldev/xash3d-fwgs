@@ -445,6 +445,27 @@ static void SCR_PlayInGameMovie_f( void )
 
 /*
 ==================
+CL_GameSuccess_f
+
+engine.dll 0x43033290: the game is won (trigger_endgame status 2 sends
+"CL_GameSuccess"). Retail leaves the game, opens the credits
+(gui/Scripts/Mainmenu/credits.txt) and plays movies/m9_outro.avi over
+them; here the movie plays, then the menu (no credits). The disconnect
+aborts the frame; started in the very next frame the movie was closed
+again (the menu came up), so it waits one more frame
+==================
+*/
+static void CL_GameSuccess_f( void )
+{
+	if( cls.state == ca_disconnected || cls.state == ca_cinematic )
+		return;
+
+	Con_Printf( "CL_GameSuccess: game won, playing m9_outro\n" );
+	Cbuf_InsertText( "disconnect\nwait\nmovie movies/m9_outro.avi full\n" );
+}
+
+/*
+==================
 SCR_InitCinematic
 ==================
 */
@@ -456,6 +477,7 @@ void SCR_InitCinematic( void )
 
 	Cvar_RegisterVariable( &v_movie );
 	Cmd_AddCommand( "nf_playmovie", SCR_PlayInGameMovie_f, "play a Nightfire movie (movies/<name>) while in game" );
+	Cmd_AddRestrictedCommand( "CL_GameSuccess", CL_GameSuccess_f, "Nightfire: game won, leave the game and play m9_outro" );
 }
 
 int SCR_GetCinematicTexture( void )
