@@ -3048,6 +3048,13 @@ int GAME_EXPORT CL_DecalIndex( int id )
 		if( !gl_texturenum )
 			gl_texturenum = ref.dllFuncs.GL_LoadTexture( host.draw_decals[id], NULL, 0, TF_DECAL );
 
+		if( FBitSet( (int)nf_debug.value, 2 ))
+		{
+			Con_Printf( "nf_debug: decal %d '%s' -> texture %d, world size %dx%d\n", id, host.draw_decals[id], gl_texturenum,
+				gl_texturenum ? REF_GET_PARM( PARM_TEX_SRC_WIDTH, gl_texturenum ) : 0,
+				gl_texturenum ? REF_GET_PARM( PARM_TEX_SRC_HEIGHT, gl_texturenum ) : 0 );
+		}
+
 		cl.decal_index[id] = gl_texturenum;
 		Image_ClearForceFlags();
 	}
