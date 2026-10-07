@@ -2167,10 +2167,11 @@ static void Mod_SetupSubmodels( model_t *mod, dbspmodel_t *bmod )
 
 		mod->hulls[0] = world_hull0;
 
-		// James Bond 007: Nightfire brush models have no render nodes; the
-		// BSP42 converter stores the root of an unexpanded clip tree (built
-		// from the model's brushes) as headnode[0] = -2 - root
-		if( i != 0 && bm->headnode[0] <= -2 )
+		// James Bond 007: Nightfire brush models have no render nodes and the
+		// world's render tree is too coarse for point collision; the BSP42
+		// converter stores the root of an unexpanded clip tree (built from the
+		// solid brushes) as headnode[0] = -2 - root
+		if( bm->headnode[0] <= -2 )
 		{
 			const int root = -2 - bm->headnode[0];
 			hull_t *hull = &mod->hulls[0];

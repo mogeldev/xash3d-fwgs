@@ -1279,6 +1279,15 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 		}
 	}
 	if( cnt == 0 ) { free( seen ); free( order ); return 0; }
+
+	// hull 0 (point traces: bullets, sight, the monster floor check) only
+	// takes solid geometry: brush attribute bit 0x2 (0x102/0x202 world, 0x902
+	// sky); clip, playerclip and trigger brushes (0x...201) block only hulls 1-3
+	int *order0 = (int *)malloc( sizeof( int ) * cnt ), cnt0 = 0;
+	if( !order0 ) { free( seen ); free( order ); return 0; }
+	for( int k = 0; k < cnt; k++ )
+		if( rd_i32( L[15] + order[k] * 12 ) & 2 )
+			order0[cnt0++] = order[k];
 #ifdef NFBSP_STANDALONE
 	fprintf( stderr, "[nfw] world brushes=%d\n", cnt );
 #endif
@@ -1298,26 +1307,29 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 	ctx.tried = (int *)calloc( ngeom > 0 ? ngeom : 1, sizeof( int ));
 	ctx.gen = 1;
 	if( !pid || !ctx.used || !ctx.tried || ( nplanes > 0 && ngeom <= 0 ))
-	{ free( pid ); free( ctx.used ); free( ctx.tried ); free( ctx.base.vs ); free( ctx.br ); free( seen ); free( order ); return 0; }
+	{ free( pid ); free( ctx.used ); free( ctx.tried ); free( ctx.base.vs ); free( ctx.br ); free( seen ); free( order ); free( order0 ); return 0; }
 
 	// Clipnode 0 is where brush models without clip brushes point (headnode 0),
 	// so a real hull root must never be 0: reserve it with an empty dummy
 	// clipnode when the lump is empty.
 	if( clips->len == 0 ) { buf_i32( clips, 0 ); buf_i32( clips, -1 ); buf_i32( clips, -1 ); }
 
-	for( int hull = 1; hull <= 3 && ok; hull++ )
+	for( int hull = 0; hull <= 3 && ok; hull++ )
 	{
+		const int *hord = hull == 0 ? order0 : order;
+		const int hcnt = hull == 0 ? cnt0 : cnt;
 		size_t base_clip = clips->len, base_plane = planes->len;
 		nfh_plane_t cell[6];
 		nfw_list_t faces = { NULL, 0, 0 };
 		int idx;
 
+		ctx.nbr = hcnt;
 		memset( ctx.used, 0, (size_t)( ngeom > 0 ? ngeom : 1 ));
 
 		// expanded brush halfspaces + bbox
-		for( int k = 0; k < cnt; k++ )
+		for( int k = 0; k < hcnt; k++ )
 		{
-			int bi = order[k];
+			int bi = hord[k];
 			int si = rd_i32( L[15] + bi * 12 + 4 );
 			int sc = rd_i32( L[15] + bi * 12 + 8 );
 			nfh_plane_t *pl = (nfh_plane_t *)malloc( sizeof( nfh_plane_t ) * ( sc > 0 ? sc : 1 ));
@@ -1359,16 +1371,16 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 #ifdef NFBSP_STANDALONE
 		{
 			double tcsg = nfw_time();
-			fprintf( stderr, "[nfw] hull %d: csg start (%d brushes)\n", hull, cnt );
-			nfw_csg_union_faces( &ctx, cnt, hull, &faces );
+			fprintf( stderr, "[nfw] hull %d: csg start (%d brushes)\n", hull, hcnt );
+			nfw_csg_union_faces( &ctx, hcnt, hull, &faces );
 			fprintf( stderr, "[nfw] hull %d: csg done %.1fs, %d faces\n", hull, nfw_time() - tcsg, faces.n );
 			nfw_dump_faces( getenv( "NFW_CSG_DUMP" ), hull, &faces );
 		}
 #else
-		nfw_csg_union_faces( &ctx, cnt, hull, &faces );
+		nfw_csg_union_faces( &ctx, hcnt, hull, &faces );
 #endif
 #else
-		for( int k = 0; k < cnt && ok; k++ )
+		for( int k = 0; k < hcnt && ok; k++ )
 		{
 			float *bv = (float *)malloc( sizeof(float) * NFH_MAXV * 3 );
 			int nv = bv ? nfh_verts( &ctx.base, ctx.br[k].pl, ctx.br[k].n ) : 0;
@@ -1393,7 +1405,7 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 					if( i < nf ) { px=fp[i*3]; py=fp[i*3+1]; pz=fp[i*3+2]; }
 					else { px=cen[0]; py=cen[1]; pz=cen[2]; }
 					q[0]=px+5.0f*nx; q[1]=py+5.0f*ny; q[2]=pz+5.0f*nz;
-					for( int b2 = 0; b2 < cnt && !found; b2++ )
+					for( int b2 = 0; b2 < hcnt && !found; b2++ )
 					{
 						if( b2 == k ) continue;
 						if( q[0] < ctx.br[b2].mins[0]-0.1f || q[0] > ctx.br[b2].maxs[0]+0.1f ||
@@ -1452,7 +1464,7 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 		idx = nfw_rec( &ctx, cell, 6, &faces, 0 );
 #endif
 		nfw_free_list( &faces );
-		for( int k = 0; k < cnt; k++ ) free( ctx.br[k].pl );
+		for( int k = 0; k < hcnt; k++ ) free( ctx.br[k].pl );
 
 		if( ctx.base.overflow || idx < 0 )
 		{
@@ -1462,7 +1474,7 @@ static int nfw_build_world( const unsigned char **L, int nleaves, int nbrushes, 
 	}
 
 	free( pid ); free( ctx.used ); free( ctx.tried ); free( ctx.br ); free( ctx.base.vs );
-	free( seen ); free( order );
+	free( seen ); free( order ); free( order0 );
 	return ok;
 }
 
@@ -2667,7 +2679,7 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 	}
 	// lighting (resampled from the Nightfire per-surface lightmaps)
 	lumps[8] = lighting;
-	// clipnodes (hulls 1-3): Nightfire has no clipnode lump (its collision is
+	// clipnodes (hulls 0-3): Nightfire has no clipnode lump (its collision is
 	// surface-based). Build the world's three hulls as expanded solid BSPs over
 	// the world brushes (see nfw_build_world / docs/world-clip-hull.md).
 	{
@@ -2677,6 +2689,12 @@ byte *NFBSP_Convert42( const void *buffer, size_t size, size_t *outsize )
 
 		world_ok = nfw_build_world( L, nleaves, nbrushes_w, llen[1] / 20, &lumps[9], &lumps[1], om[0].headnode );
 #endif
+		// hull 0: the world's point tree from the solid brushes. Nightfire's
+		// render tree is coarse (one leaf can span two storeys; floors exist
+		// only as leaf brushes), so point traces against it passed through
+		// floors and ceilings. Stored as headnode[0] = -2 - root, like the
+		// brush models; without it the render tree stays (headnode[0] 0)
+		om[0].headnode[0] = ( world_ok && om[0].headnode[0] > 0 ) ? -2 - om[0].headnode[0] : 0;
 		if( !world_ok )
 		{
 			// Fallback: FWGS takes a hull's headnode literally as the root
