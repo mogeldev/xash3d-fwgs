@@ -140,12 +140,13 @@ S_StartFrontendMusic
 
 James Bond 007: Nightfire: the retail main menu, opened under NF_Intro,
 starts sound/music/mission/gui/frontend_ectest.ogg (gui/Scripts/Mainmenu/
-Nightfire.txt), so the music runs during the silent movie and in the menu
+Nightfire.txt), so the music runs during the silent movie and in the menu;
+the 58 s track loops while the menu stays open
 =================
 */
 void S_StartFrontendMusic( const char *path )
 {
-	S_StartBackgroundTrack( path, NULL, 0, true );
+	S_StartBackgroundTrack( path, path, 0, true );
 
 	if( s_bgTrack.stream )
 		s_bgTrack.source = NF_SOURCE_FRONTEND;
