@@ -466,6 +466,27 @@ static void CL_GameSuccess_f( void )
 
 /*
 ==================
+CL_QuitToMenu_f
+
+engine.dll 0x43033120: the mission is failed (trigger_endgame status 0,
+10 s after the failure the game rules send "CL_QuitToMenu"). Retail
+leaves the game and opens the load dialog
+(gui/Scripts/Dialogs/dlg_load.txt) with isMissionFailedMode 1 (black
+background; cancel goes to the main menu). Here: the stock menu's load
+page (menu_loadgame) over the main menu
+==================
+*/
+static void CL_QuitToMenu_f( void )
+{
+	if( cls.state == ca_disconnected || cls.state == ca_cinematic )
+		return;
+
+	Con_Printf( "CL_QuitToMenu: mission failed, opening the load menu\n" );
+	Cbuf_InsertText( "disconnect\nwait\nmenu_loadgame\n" );
+}
+
+/*
+==================
 SCR_InitCinematic
 ==================
 */
@@ -478,6 +499,7 @@ void SCR_InitCinematic( void )
 	Cvar_RegisterVariable( &v_movie );
 	Cmd_AddCommand( "nf_playmovie", SCR_PlayInGameMovie_f, "play a Nightfire movie (movies/<name>) while in game" );
 	Cmd_AddRestrictedCommand( "CL_GameSuccess", CL_GameSuccess_f, "Nightfire: game won, leave the game and play m9_outro" );
+	Cmd_AddRestrictedCommand( "CL_QuitToMenu", CL_QuitToMenu_f, "Nightfire: mission failed, leave the game and open the load menu" );
 }
 
 int SCR_GetCinematicTexture( void )
