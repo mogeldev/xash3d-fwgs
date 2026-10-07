@@ -1226,6 +1226,72 @@ static void Mod_LoadMapSprite( model_t *mod, const void *buffer, size_t size, qb
 }
 
 /*
+====================
+Mod_LoadImageSprite
+
+Nightfire: the retail HUD draws plain images (gui/hud/*.png). An image
+file given to SPR_Load becomes a sprite with one frame of the whole image
+(alpha kept), so the client can draw it with SPR_* or TriAPI
+====================
+*/
+static void Mod_LoadImageSprite( model_t *mod, const void *buffer, size_t size, qboolean *loaded )
+{
+	char texname[128];
+	char poolname[MAX_VA_STRING];
+	mspriteframe_t *pspriteframe;
+	msprite_t *psprite;
+	rgbdata_t *pix;
+	int w, h;
+
+	if( loaded ) *loaded = false;
+	Q_snprintf( texname, sizeof( texname ), "#%s", mod->name );
+	pix = FS_LoadImage( texname, buffer, size );
+	if( !pix ) return;
+
+	w = pix->width;
+	h = pix->height;
+	mod->type = mod_sprite;
+
+	Q_snprintf( poolname, sizeof( poolname ), "^2%s^7", mod->name );
+	mod->mempool = Mem_AllocPool( poolname );
+	psprite = Mem_Calloc( mod->mempool, sizeof( msprite_t ));
+	mod->cache.data = psprite;
+
+	psprite->type = SPR_FWD_PARALLEL;
+	psprite->texFormat = SPR_INDEXALPHA;
+	psprite->numframes = mod->numframes = 1;
+	psprite->radius = sqrt((( w >> 1 ) * ( w >> 1 )) + (( h >> 1 ) * ( h >> 1 )));
+
+	mod->mins[0] = mod->mins[1] = -w / 2;
+	mod->maxs[0] = mod->maxs[1] = w / 2;
+	mod->mins[2] = -h / 2;
+	mod->maxs[2] = h / 2;
+
+	psprite->frames[0].type = SPR_SINGLE;
+	psprite->frames[0].frameptr = Mem_Calloc( mod->mempool, sizeof( mspriteframe_t ));
+	pspriteframe = psprite->frames[0].frameptr;
+	pspriteframe->width = w;
+	pspriteframe->height = h;
+	pspriteframe->up = ( h >> 1 );
+	pspriteframe->left = -( w >> 1 );
+	pspriteframe->down = ( h >> 1 ) - h;
+	pspriteframe->right = w + -( w >> 1 );
+
+	Q_snprintf( texname, sizeof( texname ), "#HUD/%s", mod->name );
+	pspriteframe->gl_texturenum = GL_LoadTextureInternal( texname, pix, TF_IMAGE );
+
+	FS_FreeImage( pix );
+	if( loaded ) *loaded = true;
+}
+
+static qboolean CL_IsImageFile( const char *name )
+{
+	const char *ext = COM_FileExtension( name );
+
+	return !Q_stricmp( ext, "png" ) || !Q_stricmp( ext, "tga" ) || !Q_stricmp( ext, "bmp" );
+}
+
+/*
 =============
 CL_LoadHudSprite
 
@@ -1270,6 +1336,8 @@ static qboolean CL_LoadHudSprite( const char *szSpriteName, model_t *m_pSprite, 
 
 	if( type == SPR_MAPSPRITE )
 		Mod_LoadMapSprite( m_pSprite, buf, size, &loaded );
+	else if( CL_IsImageFile( szSpriteName ))
+		Mod_LoadImageSprite( m_pSprite, buf, size, &loaded );
 	else
 	{
 		Mod_LoadSpriteModel( m_pSprite, buf, size, &loaded );
