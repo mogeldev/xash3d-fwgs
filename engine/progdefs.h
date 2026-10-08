@@ -215,6 +215,9 @@ typedef struct entvars_s
 	edict_t		*euser2;
 	edict_t		*euser3;
 	edict_t		*euser4;
+
+	// Nightfire (retail entvars_t is 0x2C0 bytes with this last field)
+	vec3_t		fixedlight;
 } entvars_t;
 
 #endif//PROGDEFS_H

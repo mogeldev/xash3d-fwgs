@@ -202,6 +202,7 @@ static TYPEDESCRIPTION gStaticEntry[] =
 	DEFINE_FIELD( entity_state_t, fuser2, FIELD_FLOAT ),
 	DEFINE_FIELD( entity_state_t, fuser3, FIELD_FLOAT ),
 	DEFINE_FIELD( entity_state_t, fuser4, FIELD_FLOAT ),
+	DEFINE_ARRAY( entity_state_t, fixedlight, FIELD_CHARACTER, sizeof( color24 )),
 };
 
 static TYPEDESCRIPTION gSoundEntry[] =

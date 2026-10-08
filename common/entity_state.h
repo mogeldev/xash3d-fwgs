@@ -116,6 +116,9 @@ struct entity_state_s
 	vec3_t		vuser2;
 	vec3_t		vuser3;
 	vec3_t		vuser4;
+
+	// Nightfire: model light floor, used with EF_FIXEDLIGHT (same layout in the HLSDK)
+	color24		fixedlight;
 };
 
 #include "pm_info.h"

@@ -1493,11 +1493,24 @@ static void R_StudioNightfirePointLighting( int vertex, int normalindex,
 		result[2] += el->color.b * factor;
 	}
 
-	// Retail clamps the final diffuse multiplier per channel. The 0.1
-	// minimum belongs to the view model, not ordinary world characters.
-	const float minimum = RI.currententity == tr.viewent ? 0.1f : 0.0f;
+	// Retail clamps the final diffuse multiplier per channel (0x4307D244).
+	// EF_FIXEDLIGHT supplies the entity's fixedlight bytes as the minimum;
+	// otherwise 0.1 for the view model and 0 for ordinary models.
+	vec3_t minimum = { 0.0f, 0.0f, 0.0f };
+	if( FBitSet( RI.currententity->curstate.effects, EF_FIXEDLIGHT ))
+	{
+		const color24 *fixed = &RI.currententity->curstate.fixedlight;
+		minimum[0] = fixed->r / 255.0f;
+		minimum[1] = fixed->g / 255.0f;
+		minimum[2] = fixed->b / 255.0f;
+	}
+	else if( RI.currententity == tr.viewent )
+	{
+		VectorSet( minimum, 0.1f, 0.1f, 0.1f );
+	}
+
 	for( int i = 0; i < 3; ++i )
-		out[i] = bound( minimum, result[i], 1.0f ) * 255.0f;
+		out[i] = bound( minimum[i], result[i], 1.0f ) * 255.0f;
 }
 
 static void R_StudioSetColorArray( short *ptricmds, vec3_t *pstudionorms, byte *color )

@@ -113,6 +113,7 @@
 #define EF_NOINTERP			32	// don't interpolate the next frame
 #define EF_LIGHT			64	// rocket flare glow sprite
 #define EF_NODRAW			128	// don't draw entity
+#define EF_FIXEDLIGHT		256	// Nightfire: entity's fixedlight is the model light floor
 
 #define EF_WATERSIDES		(1U<<26)	// Do not remove sides for func_water entity
 #define EF_FULLBRIGHT		(1U<<27)	// Just get fullbright

@@ -308,6 +308,9 @@ static const delta_field_t ent_fields[] =
 { ENTS_DEF( vuser4[0] )	},
 { ENTS_DEF( vuser4[1] )	},
 { ENTS_DEF( vuser4[2] )	},
+{ ENTS_DEF( fixedlight.r )	},
+{ ENTS_DEF( fixedlight.g )	},
+{ ENTS_DEF( fixedlight.b )	},
 };
 
 static const delta_field_t meta_fields[] =
