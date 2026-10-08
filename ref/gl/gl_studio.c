@@ -1926,6 +1926,111 @@ static void R_StudioBuildArrayChromeMesh( short *ptricmds, vec3_t *pstudionorms,
 	}
 }
 
+/*
+===============
+R_StudioBuildArrayNFWaterMesh
+
+Nightfire mdl_water: the retail vertex program "water"
+(materials/mdl_water_m0.rma, docs/retail/water.md) done on the CPU. Two
+cosine waves along world x and y lift the vertex and their slopes tilt the
+normal; the texture (a pre-drawn reflection) is looked up by the reflected
+eye vector and the alpha grows from 0.2 (looking straight down) to 0.8
+(grazing). Unlit like retail (vertex colour 1).
+===============
+*/
+static void R_StudioBuildArrayNFWaterMesh( short *ptricmds )
+{
+	const cl_entity_t *e = RI.currententity;
+	// env_drawwater sends tesselation / wave height; 0 -> the server defaults
+	const float tess = e->curstate.iuser1 > 0 ? (float)e->curstate.iuser1 : 32.0f;
+	const float height = e->curstate.fuser1 > 0.0f ? e->curstate.fuser1 : 2.5f;
+	// retail driver 0x4301E1C0: WaveParametersX = ( phase, sqrt( h / 2 ), amp / tess, 1 / ( 2 tess )),
+	// Y the same with sqrt( h / 1.25 ); the program takes x * w * pi + phase
+	const float ampx = sqrtf( height / 2.0f ), ampy = sqrtf( height / 1.25f );
+	const float freq = M_PI_F / ( 2.0f * tess );
+	// both phases advance by the frame time and wrap at 3 s, so they are equal
+	const float phase = (float)fmod( gp_cl->time, 3.0 ) * ( 2.0f * M_PI_F / 3.0f );
+	const byte alpha_scale = (byte)bound( 0, (int)( tr.blend * 255.0f ), 255 );
+	int i;
+
+	while(( i = *( ptricmds++ )))
+	{
+		int vertexState = 0;
+		qboolean tri_strip = true;
+
+		if( i < 0 )
+		{
+			tri_strip = false;
+			i = -i;
+		}
+
+		if( !R_StudioReserveArrays( i ))
+		{
+			ptricmds += 4 * i;
+			continue;
+		}
+
+		for( ; i > 0; i--, ptricmds += 4 )
+		{
+			GLubyte *cl = g_studio.arraycolor[g_studio.numverts];
+			float *pos = g_studio.arrayverts[g_studio.numverts];
+			vec3_t normal, eye, refl;
+			float ax, ay, d;
+
+			vertexState = R_StudioBuildIndices( tri_strip, vertexState );
+
+			VectorCopy( g_studio.verts[ptricmds[0]], pos );
+			ax = pos[0] * freq + phase;
+			ay = pos[1] * freq + phase;
+			pos[2] += ampx * cosf( ax ) + ampy * cosf( ay );
+
+			VectorSet( normal, ampx / tess * sinf( ax ), ampy / tess * sinf( ay ), 1.0f );
+			VectorNormalize( normal );
+
+			VectorSubtract( RI.rvp.vieworigin, pos, eye );
+			VectorNormalize( eye );
+			d = DotProduct( eye, normal );
+			VectorMA( eye, -2.0f * d, normal, refl );
+			VectorNormalize( refl );
+
+			g_studio.arraycoord[g_studio.numverts][0] = refl[0] * 0.5f + 0.5f;
+			g_studio.arraycoord[g_studio.numverts][1] = refl[1] * 0.5f + 0.5f;
+
+			cl[0] = cl[1] = cl[2] = 255;
+			cl[3] = (byte)( bound( 0.2f, 1.0f - fabsf( d ), 0.8f ) * alpha_scale );
+
+			g_studio.numverts++;
+		}
+	}
+}
+
+/*
+===============
+R_StudioDrawNFWaterMesh
+
+two-sided, blended by the vertex alpha
+===============
+*/
+static void R_StudioDrawNFWaterMesh( short *ptricmds )
+{
+	int oldcull = glState.faceCull;
+
+	if( oldcull != GL_NONE )
+		GL_Cull( GL_NONE );
+	pglEnable( GL_BLEND );
+	pglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+
+	g_studio.startverts = g_studio.numverts;
+	g_studio.startelems = g_studio.numelems;
+	R_StudioBuildArrayNFWaterMesh( ptricmds );
+	R_StudioDrawArrays( g_studio.startverts, g_studio.startelems );
+
+	if( g_studio.rendermode == kRenderNormal || g_studio.rendermode == kRenderTransAlpha )
+		pglDisable( GL_BLEND );
+	if( oldcull != GL_NONE )
+		GL_Cull( oldcull );
+}
+
 static void R_StudioDrawArrays( uint startverts, uint startelems )
 {
 	if( g_studio.numelems == startelems )
@@ -2157,8 +2262,10 @@ static void R_StudioDrawPoints( void )
 
 		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
 
-		// Nightfire: two-sided meshes (mdl_water surfaces, mod_nfmdl.c)
-		if( FBitSet( g_nFaceFlags, STUDIO_NF_TWOSIDE ) && glState.faceCull != GL_NONE )
+		// Nightfire: the retail water program, other two-sided meshes (mod_nfmdl.c)
+		if( FBitSet( g_nFaceFlags, STUDIO_NF_NFWATER ) && !FBitSet( g_nForceFaceFlags, STUDIO_NF_CHROME ))
+			R_StudioDrawNFWaterMesh( ptricmds );
+		else if( FBitSet( g_nFaceFlags, STUDIO_NF_TWOSIDE ) && glState.faceCull != GL_NONE )
 		{
 			GL_Cull( GL_NONE );
 			R_StudioSubmitMesh( ptricmds, pstudionorms, s, t, shellscale, 0 );

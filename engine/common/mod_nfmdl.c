@@ -62,6 +62,7 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize );
 #define STUDIO_NF_ADDITIVE   0x0020
 #define STUDIO_NF_MASKED     0x0040
 #define STUDIO_NF_TWOSIDE    0x1000
+#define STUDIO_NF_NFWATER    (1U<<22)
 
 enum {
 	H_VERSION = 4, H_NAME = 8, H_EYE = 76, H_MIN = 88, H_MAX = 100,
@@ -624,8 +625,8 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize )
 		else if( !strcmp( mat, "mdl_basicselfillum" ) || !strncmp( mat, "mdl_cloud", 9 ) ||
 			!strncmp( mat, "mdl_sky", 7 ) || !strcmp( mat, "mdl_lightningcloud" ))
 			flags |= STUDIO_NF_FULLBRIGHT;
-		else if( !strcmp( mat, "mdl_water" ))	// func_water surfaces: unlit (no light constants), seen from both sides
-			flags |= STUDIO_NF_FULLBRIGHT | STUDIO_NF_TWOSIDE;
+		else if( !strcmp( mat, "mdl_water" ))	// func_water surfaces: unlit (no light constants), seen from both sides, retail water program
+			flags |= STUDIO_NF_FULLBRIGHT | STUDIO_NF_TWOSIDE | STUDIO_NF_NFWATER;
 		buf_bytes( &out, texname, 64 );
 		buf_i32( &out, (int)flags );
 		buf_i32( &out, UVSCALE );
