@@ -1186,6 +1186,14 @@ static int nfw_rec( nfw_ctx_t *ctx, nfh_plane_t *cell, int nc, nfw_list_t *faces
 			if( s<smin ) smin=s;
 			if( s>smax ) smax=s;
 		}
+		// A face on the split plane but facing the other way (another brush's
+		// side on the same plane) is now a cell boundary. Kept, it went to the
+		// front child and was chosen as a split again: a zero-volume cell whose
+		// centre lies on that brush's surface, so a solid leaf of no thickness
+		// spanning the whole cell - an invisible wall for traces (m6_escape07,
+		// y = 560; 6934 such leaves on the 35 campaign maps).
+		if( smin >= -NFH_EPS && smax <= NFH_EPS )
+		{ free( f->pts ); free( f ); ctx->nconsumed++; continue; }
 		if( smin >= -NFH_EPS ) { nfw_add( &front, f ); }
 		else if( smax <= NFH_EPS ) { nfw_add( &back, f ); }
 		else
