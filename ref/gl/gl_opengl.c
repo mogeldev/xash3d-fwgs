@@ -1234,6 +1234,7 @@ static void GL_InitCommands( void )
 	gEngfuncs.Cvar_RegisterVariable( &r_traceglow );
 	gEngfuncs.Cvar_RegisterVariable( &r_studio_sort_textures );
 	gEngfuncs.Cvar_RegisterVariable( &r_studio_drawelements );
+	gEngfuncs.Cvar_RegisterVariable( &r_studio_specular );
 	gEngfuncs.Cvar_RegisterVariable( &r_studio_builtin_renderer );
 	gEngfuncs.Cvar_RegisterVariable( &r_ripple );
 	gEngfuncs.Cvar_RegisterVariable( &r_ripple_updatetime );

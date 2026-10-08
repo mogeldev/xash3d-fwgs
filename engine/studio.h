@@ -91,6 +91,7 @@ Studio models are position independent, so the cache manager can move them.
 #define STUDIO_NF_HAS_ALPHA		(1U<<20)	// external texture has alpha-channel
 #define STUDIO_NF_HAS_DETAIL		(1U<<21)	// studiomodels has detail textures
 #define STUDIO_NF_NFWATER		(1U<<22)	// Nightfire mdl_water: retail water vertex program (gl_studio.c)
+#define STUDIO_NF_NFSPECULAR		(1U<<23)	// Nightfire mdl_specular: retail specular reflection weighted by texture alpha (gl_studio.c)
 #define STUDIO_NF_COLORMAP		(1U<<30)	// internal system flag
 #define STUDIO_NF_UV_COORDS		(1U<<31)	// using half-float coords instead of ST
 

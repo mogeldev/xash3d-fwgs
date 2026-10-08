@@ -63,6 +63,7 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize );
 #define STUDIO_NF_MASKED     0x0040
 #define STUDIO_NF_TWOSIDE    0x1000
 #define STUDIO_NF_NFWATER    (1U<<22)
+#define STUDIO_NF_NFSPECULAR (1U<<23)
 
 enum {
 	H_VERSION = 4, H_NAME = 8, H_EYE = 76, H_MIN = 88, H_MAX = 100,
@@ -622,6 +623,7 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize )
 		if( !strcmp( mat, "mdl_masked" )) flags |= STUDIO_NF_MASKED;
 		else if( !strcmp( mat, "mdl_chrome" )) flags |= STUDIO_NF_CHROME;
 		else if( !strcmp( mat, "mdl_additive" )) flags |= STUDIO_NF_ADDITIVE;
+		else if( !strcmp( mat, "mdl_specular" )) flags |= STUDIO_NF_NFSPECULAR;
 		else if( !strcmp( mat, "mdl_basicselfillum" ) || !strncmp( mat, "mdl_cloud", 9 ) ||
 			!strncmp( mat, "mdl_sky", 7 ) || !strcmp( mat, "mdl_lightningcloud" ))
 			flags |= STUDIO_NF_FULLBRIGHT;

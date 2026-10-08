@@ -124,11 +124,13 @@ typedef struct
 // studio-related cvars
 CVAR_DEFINE_AUTO( r_studio_sort_textures, "0", FCVAR_GLCONFIG, "change draw order for additive meshes" );
 CVAR_DEFINE_AUTO( r_studio_drawelements, "1", FCVAR_GLCONFIG, "use glDrawElements for studiomodels" );
+CVAR_DEFINE_AUTO( r_studio_specular, "1", FCVAR_GLCONFIG, "enable Nightfire model specular reflections" );
 CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model renderer instead of the one provided by client library (debugging)" );
 static cvar_t			*cl_righthand = NULL;
 
 static r_studio_interface_t	*pStudioDraw;
 static studio_draw_state_t	g_studio;		// global studio state
+static qboolean			g_studio_specular_pass = false;
 
 // global variables
 static qboolean m_fDoRemap;
@@ -1513,9 +1515,77 @@ static void R_StudioNightfirePointLighting( int vertex, int normalindex,
 		out[i] = bound( minimum[i], result[i], 1.0f ) * 255.0f;
 }
 
+static void R_StudioNightfireSpecularLighting( int vertex, int normalindex,
+	const vec3_t localnormal, byte *out )
+{
+	vec3_t normal, toeye;
+	vec3_t specular = { 0.0f, 0.0f, 0.0f };
+
+	if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ))
+		VectorCopy( g_studio.norms[normalindex], normal );
+	else
+	{
+		const byte *bones = (const byte *)m_pStudioHeader + m_pSubModel->norminfoindex;
+		Matrix3x4_VectorRotate( g_studio.lighttransform[bones[normalindex]], localnormal, normal );
+	}
+	VectorNormalize( normal );
+
+	VectorSubtract( RI.rvp.vieworigin, g_studio.verts[vertex], toeye );
+	const float eyedist2 = DotProduct( toeye, toeye );
+	if( eyedist2 <= 0.0001f )
+	{
+		out[0] = out[1] = out[2] = 0;
+		out[3] = 255;
+		return;
+	}
+	VectorScale( toeye, 1.0f / sqrtf( eyedist2 ), toeye );
+
+	for( int i = 0; i < g_studio.numlocallights; ++i )
+	{
+		const dlight_t *el = g_studio.locallight[i];
+		vec3_t tolight;
+		VectorSubtract( el->origin, g_studio.verts[vertex], tolight );
+		const float distance2 = DotProduct( tolight, tolight );
+		if( distance2 <= 0.0f ) continue;
+
+		const float invdist = 1.0f / sqrtf( distance2 );
+		const vec3_t ldir = { tolight[0] * invdist, tolight[1] * invdist, tolight[2] * invdist };
+		const float facing = DotProduct( normal, ldir );
+		if( facing <= 0.0f ) continue;
+
+		vec3_t h;
+		VectorAdd( toeye, ldir, h );
+		const float hlen2 = DotProduct( h, h );
+		if( hlen2 <= 0.0001f ) continue;
+		VectorScale( h, 1.0f / sqrtf( hlen2 ), h );
+
+		const float nh = DotProduct( normal, h );
+		if( nh <= 0.0f ) continue;
+
+		const float nh_clamped = Q_min( 1.0f, nh );
+		// Retail mdl_specular shader (exponent 25, attenuation min(1, 100*radius/dist^2), raw RGB/255)
+		const float spec = powf( nh_clamped, 25.0f ) * Q_min( 1.0f, 100.0f * el->radius / distance2 ) / 255.0f;
+		specular[0] += el->color.r * spec;
+		specular[1] += el->color.g * spec;
+		specular[2] += el->color.b * spec;
+	}
+
+	const float blend = tr.blend;
+	out[0] = (byte)( bound( 0.0f, specular[0] * blend, 1.0f ) * 255.0f );
+	out[1] = (byte)( bound( 0.0f, specular[1] * blend, 1.0f ) * 255.0f );
+	out[2] = (byte)( bound( 0.0f, specular[2] * blend, 1.0f ) * 255.0f );
+	out[3] = 255;
+}
+
 static void R_StudioSetColorArray( short *ptricmds, vec3_t *pstudionorms, byte *color )
 {
 	float	*lv = (float *)g_studio.lightvalues[ptricmds[1]];
+
+	if( g_studio_specular_pass )
+	{
+		R_StudioNightfireSpecularLighting( ptricmds[0], ptricmds[1], pstudionorms[ptricmds[1]], color );
+		return;
+	}
 
 	color[3] = tr.blend * 255;
 	if( R_StudioNightfireBasicLighting( g_nFaceFlags ))
@@ -2179,6 +2249,48 @@ static void R_StudioSubmitMesh( short *ptricmds, vec3_t *pstudionorms, float s, 
 
 /*
 ===============
+R_StudioDrawSpecularMesh
+
+Nightfire mdl_specular: additive specular highlight weighted by texture alpha
+(materials/mdl_specular_m0.rma, docs/retail/lighting.md)
+===============
+*/
+static void R_StudioDrawSpecularMesh( short *ptricmds, vec3_t *pstudionorms, float s, float t, float shellscale )
+{
+	const qboolean twosided = FBitSet( g_nFaceFlags, STUDIO_NF_TWOSIDE ) && glState.faceCull != GL_NONE;
+	if( twosided )
+		GL_Cull( GL_NONE );
+
+	R_AllowFog( false );
+	pglEnable( GL_BLEND );
+	pglBlendFunc( GL_SRC_ALPHA, GL_ONE );
+	pglDepthMask( GL_FALSE );
+	pglDepthFunc( GL_EQUAL );
+
+	pglTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE_ARB );
+	pglTexEnvi( GL_TEXTURE_ENV, GL_COMBINE_RGB_ARB, GL_REPLACE );
+	pglTexEnvi( GL_TEXTURE_ENV, GL_SOURCE0_RGB_ARB, GL_PRIMARY_COLOR_ARB );
+	pglTexEnvi( GL_TEXTURE_ENV, GL_OPERAND0_RGB_ARB, GL_SRC_COLOR );
+	pglTexEnvi( GL_TEXTURE_ENV, GL_COMBINE_ALPHA_ARB, GL_REPLACE );
+	pglTexEnvi( GL_TEXTURE_ENV, GL_SOURCE0_ALPHA_ARB, GL_TEXTURE );
+	pglTexEnvi( GL_TEXTURE_ENV, GL_OPERAND0_ALPHA_ARB, GL_SRC_ALPHA );
+
+	g_studio_specular_pass = true;
+	R_StudioSubmitMesh( ptricmds, pstudionorms, s, t, shellscale, 0 );
+	g_studio_specular_pass = false;
+
+	pglTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
+	pglDepthFunc( GL_LEQUAL );
+	pglDepthMask( GL_TRUE );
+	pglDisable( GL_BLEND );
+	R_AllowFog( true );
+
+	if( twosided )
+		GL_Cull( tr.fFlipViewModel ? GL_NONE : GL_FRONT );
+}
+
+/*
+===============
 R_StudioDrawPoints
 
 ===============
@@ -2357,6 +2469,15 @@ static void R_StudioDrawPoints( void )
 			GL_Cull( tr.fFlipViewModel ? GL_NONE : GL_FRONT );
 		}
 		else R_StudioSubmitMesh( ptricmds, pstudionorms, s, t, shellscale, 0 );
+
+		if( r_studio_specular.value &&
+		    FBitSet( g_nFaceFlags, STUDIO_NF_NFSPECULAR ) &&
+		    R_StudioNightfireBasicLighting( g_nFaceFlags ) &&
+		    g_studio.numlocallights > 0 &&
+		    R_ModelOpaque( RI.currententity->curstate.rendermode ))
+		{
+			R_StudioDrawSpecularMesh( ptricmds, pstudionorms, s, t, shellscale );
+		}
 
 		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
 		{
