@@ -3962,8 +3962,10 @@ void GL_BuildLightmaps( void )
 	memset( tr.lightmapTextures, 0, sizeof( tr.lightmapTextures ));
 	memset( &RI, 0, sizeof( RI ));
 
-	// update the lightmap blocksize
-	if( FBitSet( gp_host->features, ENGINE_LARGE_LIGHTMAPS ) || tr.world->version == QBSP2_VERSION || r_large_lightmaps.value )
+	// update the lightmap blocksize; Nightfire maps carry more lightmap area
+	// than 256 pages of 128x128 hold (m8_missile02: "LM_UploadBlock: full")
+	if( FBitSet( gp_host->features, ENGINE_LARGE_LIGHTMAPS ) || tr.world->version == QBSP2_VERSION || r_large_lightmaps.value
+		|| FBitSet( tr.world->flags, FWORLD_NIGHTFIRE ))
 		tr.block_size = BLOCK_SIZE_MAX;
 	else tr.block_size = BLOCK_SIZE_DEFAULT;
 

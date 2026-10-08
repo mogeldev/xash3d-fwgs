@@ -4771,6 +4771,8 @@ void Mod_LoadBrushModel( model_t *mod, void *buffer, size_t buffersize, qboolean
 #if !XASH_DEDICATED
 	g_nfbsp_loading = false;
 #endif
+	if( nfbsp && world.loading )
+		SetBits( world.flags, FWORLD_NIGHTFIRE );
 	free( nfbsp );	// the converted buffer is only needed during loading
 
 	if( world.loading ) worldmodel = mod;

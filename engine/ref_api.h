@@ -119,6 +119,7 @@ GNU General Public License for more details.
 #define FWORLD_WATERALPHA    BIT( 2 )
 #define FWORLD_HAS_DELUXEMAP BIT( 3 )
 #define FWORLD_HAS_LITWATER  BIT( 4 )
+#define FWORLD_NIGHTFIRE     BIT( 30 ) // converted James Bond 007: Nightfire BSP42 map
 
 // special rendermode for screenfade modulate
 // (probably will be expanded at some point)
