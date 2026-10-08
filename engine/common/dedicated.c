@@ -121,6 +121,11 @@ void SCR_BeginLoadingPlaque( qboolean is_background )
 
 }
 
+void SCR_NFMissionScores( void )
+{
+
+}
+
 void S_StopAllSounds( qboolean ambient )
 {
 

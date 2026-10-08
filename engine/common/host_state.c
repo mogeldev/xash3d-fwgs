@@ -170,6 +170,7 @@ static void Host_RunFrame( double time )
 		Host_SetState( STATE_GAME_SHUTDOWN, false );
 		break;
 	case STATE_CHANGELEVEL:
+		SCR_NFMissionScores();	// Nightfire: before sv_newunit is cleared
 		SCR_BeginLoadingPlaque( GameState->backgroundMap );
 		Host_SetState( GameState->nextstate, true );
 		break;

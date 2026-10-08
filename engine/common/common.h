@@ -807,6 +807,7 @@ void Con_Init( void );
 void SCR_Init( void );
 void SCR_UpdateScreen( void );
 void SCR_BeginLoadingPlaque( qboolean is_background );
+void SCR_NFMissionScores( void );
 void SCR_CheckStartupVids( void );
 void SCR_Shutdown( void );
 void Con_Print( const char *txt );

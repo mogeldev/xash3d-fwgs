@@ -489,11 +489,34 @@ static qboolean SCR_DrawPlaque( void )
 
 /*
 ================
+SCR_NFMissionScores
+
+Nightfire: the retail engine changelevel2 (0x4305F64F -> 0x430571A0) shows
+the client's mission score screen instead of the loading screen when
+sv_newunit is 1 (the game's trigger_changelevel with spawnflag 8, the end
+of a mission); it is hidden at signon 2 (CL_SignonReply). Here the menu
+(mainui ui_nf_missionscores) draws it into the last frame before the load.
+================
+*/
+static qboolean scr_nf_scores_pending;
+static qboolean scr_nf_scores_open;
+
+void SCR_NFMissionScores( void )
+{
+	scr_nf_scores_pending = Cvar_VariableInteger( "sv_newunit" ) == 1;
+}
+
+/*
+================
 SCR_BeginLoadingPlaque
 ================
 */
 void SCR_BeginLoadingPlaque( qboolean is_background )
 {
+	qboolean nf_scores = scr_nf_scores_pending && !is_background;
+
+	scr_nf_scores_pending = false;
+
 	S_StopAllSounds( true );
 	cl.audio_prepped = false;			// don't play ambients
 
@@ -512,6 +535,15 @@ void SCR_BeginLoadingPlaque( qboolean is_background )
 
 	if( is_background ) IN_MouseSavePos( );
 	cls.draw_changelevel = !is_background;
+
+	if( nf_scores )
+	{
+		Cmd_ExecuteString( "ui_nf_missionscores\n" );
+		scr_nf_scores_open = cls.key_dest == key_menu;
+		if( FBitSet( (int)nf_debug.value, 8 ))
+			Con_Printf( "nf_debug: mission scores %s (%s)\n", scr_nf_scores_open ? "shown" : "not shown", Cvar_VariableString( "nf_scoreinfo" ));
+	}
+
 	SCR_UpdateScreen();
 
 	// set video_prepped after update screen, so engine can draw last remaining frame
@@ -529,6 +561,14 @@ SCR_EndLoadingPlaque
 */
 void SCR_EndLoadingPlaque( void )
 {
+	if( scr_nf_scores_open )
+	{
+		scr_nf_scores_open = false;
+		UI_SetActiveMenu( false );
+		if( FBitSet( (int)nf_debug.value, 8 ))
+			Con_Printf( "nf_debug: mission scores closed\n" );
+	}
+
 	cls.disable_screen = 0.0f;
 	Con_ClearNotify();
 //	SNDDMA_UnlockSound();

@@ -2056,6 +2056,16 @@ void SV_ChangeLevel( qboolean loadfromsavedgame, const char *mapname, const char
 	Q_strncpy( level, mapname, sizeof( level ));
 	Q_strncpy( oldlevel, sv.name, sizeof( oldlevel ));
 
+	// Nightfire (retail engine changelevel2 0x4305F64F): a changelevel that
+	// ends the mission (sv_newunit 1, set by trigger_changelevel spawnflag 8)
+	// clears the saves of the mission before the load (the client already
+	// shows the mission scores, SCR_NFMissionScores)
+	if( sv_newunit.value )
+	{
+		ClearSaveDir();
+		Cvar_SetValue( "sv_newunit", 0 );
+	}
+
 	if( loadfromsavedgame )
 	{
 		// smooth transition in-progress
