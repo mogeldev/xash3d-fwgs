@@ -17,6 +17,7 @@ GNU General Public License for more details.
 #include "xash3d_mathlib.h"
 #include "enginefeatures.h"
 #include "pm_local.h"
+#include "common/mod_local.h"
 
 CVAR_DEFINE_AUTO( r_dlight_virtual_radius, "3", FCVAR_GLCONFIG, "increase dlight radius virtually by this amount" );
 CVAR_DEFINE_AUTO( r_lighting_extended, "1", FCVAR_GLCONFIG, "allow to get lighting from world and bmodels" );
@@ -214,6 +215,21 @@ static vec3_t	g_trace_lightspot;
 static vec3_t	g_trace_lightvec;
 static float	g_trace_fraction;
 static mleaf_t	*g_trace_lastleaf;	// last non-solid leaf the trace passed through
+static const msurface_t *g_trace_surf;	// surface the light sample was taken from
+
+/*
+=================
+R_NightfireWorld
+
+converted James Bond 007: Nightfire (PC) map: retail model light sampling
+=================
+*/
+static qboolean R_NightfireWorld( void )
+{
+	const world_static_t *w = (const world_static_t *)ENGINE_GET_PARM( PARM_GET_WORLD_PTR );
+
+	return w && FBitSet( w->flags, FWORLD_NIGHTFIRE );
+}
 
 /*
 =================
@@ -267,6 +283,7 @@ static qboolean R_LightPointSurface( const msurface_t *surf, float midf, colorVe
 		return false;
 
 	cv->r = cv->g = cv->b = cv->a = 0;
+	g_trace_surf = surf;
 
 	if( !surf->samples )
 		return true;
@@ -447,7 +464,8 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
 		return (colorVec){ 255, 255, 255, 0 };
 
 	float last_fraction = 1.0f;
-	int max_ents = r_lighting_extended.value ? MAX_PHYSENTS : 1; // get light from bmodels too
+	// retail Nightfire samples the world only (engine.dll 0x4304DA30)
+	int max_ents = r_lighting_extended.value && !R_NightfireWorld() ? MAX_PHYSENTS : 1; // get light from bmodels too
 	colorVec light = { 0 };
 
 	// check all the bsp-models
@@ -482,6 +500,7 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
 		VectorClear( g_trace_lightvec );
 		g_trace_fraction = 1.0f;
 		g_trace_lastleaf = NULL;
+		g_trace_surf = NULL;
 
 		colorVec cv;
 		if( !R_RecursiveLightPoint( pe->model, pnodes, 0.0f, 1.0f, &cv, start_l, end_l ))
@@ -516,7 +535,7 @@ colorVec R_LightVec( const vec3_t start, const vec3_t end, vec3_t lspot, vec3_t 
 {
 	colorVec light = R_LightVecInternal( start, end, lspot, lvec );
 
-	if( r_lighting_extended.value && lspot != NULL && lvec != NULL )
+	if( r_lighting_extended.value && lspot != NULL && lvec != NULL && !R_NightfireWorld())
 	{
 		// trying to get light from ceiling (but ignore gradient analyze)
 		if(( light.r + light.g + light.b ) == 0 )
@@ -592,7 +611,30 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
 	colorVec light;
 	light.r = light.g = light.b = light.a = 0;
 
-	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
+	// retail Nightfire StudioDynamicLight (engine.dll 0x4307C9B0) has no sky
+	// light path: one world trace, 8192 units along the light direction
+	const qboolean nightfire = R_NightfireWorld();
+
+	if( nightfire )
+	{
+		VectorMA( vecSrc, 8192.0f, lightDir, vecEnd );
+		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
+
+		// direction: x/y of the hit face normal, z along the trace (0x4307CB05)
+		if( g_trace_surf && g_trace_surf->plane )
+		{
+			vec3_t n;
+
+			if( FBitSet( g_trace_surf->flags, SURF_PLANEBACK ))
+				VectorNegate( g_trace_surf->plane->normal, n );
+			else VectorCopy( g_trace_surf->plane->normal, n );
+
+			lightDir[0] = n[0];
+			lightDir[1] = n[1];
+			VectorNormalize( lightDir );
+		}
+	}
+	else if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
 	{
 		vec3_t skyvec;
 
@@ -621,7 +663,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
 		}
 	}
 
-	if(( light.r + light.g + light.b ) == 0 )
+	if( !nightfire && ( light.r + light.g + light.b ) == 0 )
 	{
 		VectorScale( lightDir, 2048.0f, vecEnd );
 		VectorAdd( vecEnd, vecSrc, vecEnd );
@@ -721,6 +763,8 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
 		scale = 0.9f;
 	else if( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_AMBIENT_LIGHT ))
 		scale = 0.6f;
+	else if( nightfire )
+		scale = v_direct->value; // retail: unclamped (0x4307CDD0)
 	else
 		scale = bound( 0.75f, v_direct->value, 1.0f );
 
