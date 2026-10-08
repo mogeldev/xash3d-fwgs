@@ -1006,7 +1006,11 @@ static void R_BeamDraw( BEAM *pbeam, float frametime )
 		}
 	}
 
-	TriRenderMode( FBitSet( pbeam->flags, FBEAM_SOLID ) ? kRenderNormal : kRenderTransAdd );
+	// Nightfire: solid beams with an .spz sprite (the grapple wire) keep the
+	// sprite's alpha (a thin cable in a mostly transparent strip)
+	if( FBitSet( pbeam->flags, FBEAM_SOLID ))
+		TriRenderMode( Q_stristr( model->name, ".spz" ) ? kRenderTransAlpha : kRenderNormal );
+	else TriRenderMode( kRenderTransAdd );
 
 	if( !TriSpriteTexture( model, (int)(pbeam->frame + pbeam->frameRate * gp_cl->time) % pbeam->frameCount ))
 	{
