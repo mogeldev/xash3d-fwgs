@@ -2157,7 +2157,14 @@ static void R_StudioDrawPoints( void )
 
 		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
 
-		R_StudioSubmitMesh( ptricmds, pstudionorms, s, t, shellscale, 0 );
+		// Nightfire: two-sided meshes (mdl_water surfaces, mod_nfmdl.c)
+		if( FBitSet( g_nFaceFlags, STUDIO_NF_TWOSIDE ) && glState.faceCull != GL_NONE )
+		{
+			GL_Cull( GL_NONE );
+			R_StudioSubmitMesh( ptricmds, pstudionorms, s, t, shellscale, 0 );
+			GL_Cull( tr.fFlipViewModel ? GL_NONE : GL_FRONT );
+		}
+		else R_StudioSubmitMesh( ptricmds, pstudionorms, s, t, shellscale, 0 );
 
 		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
 		{
