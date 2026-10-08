@@ -1214,6 +1214,21 @@ pfnStudioEntityLight
 
 ===============
 */
+static qboolean R_StudioNightfireLighting( void )
+{
+	return tr.world && FBitSet( tr.world->flags, FWORLD_NIGHTFIRE );
+}
+
+// The retail basic model shader is linear RGB. Keep special passes on
+// their existing paths (fullbright sky/water, additive effects, glow shell).
+static qboolean R_StudioNightfireBasicLighting( int flags )
+{
+	return R_StudioNightfireLighting()
+		&& !FBitSet( flags, STUDIO_NF_FULLBRIGHT | STUDIO_NF_ADDITIVE )
+		&& g_studio.rendermode != kRenderTransAdd
+		&& !FBitSet( g_nForceFaceFlags, STUDIO_NF_CHROME );
+}
+
 static void R_StudioEntityLight( alight_t *lightinfo )
 {
 	float		lstrength[MAX_LOCALLIGHTS];
@@ -1228,7 +1243,10 @@ static void R_StudioEntityLight( alight_t *lightinfo )
 		lstrength[i] = 0;
 
 	vec3_t origin;
-	Matrix3x4_OriginFromMatrix( g_studio.rotationmatrix, origin );
+	const qboolean nightfire = R_StudioNightfireLighting();
+	const int maxlights = nightfire ? 3 : MAX_LOCALLIGHTS;
+	if( nightfire ) VectorCopy( ent->origin, origin );
+	else Matrix3x4_OriginFromMatrix( g_studio.rotationmatrix, origin );
 	float dist2 = 1000000.0f;
 	int k = 0;
 
@@ -1257,12 +1275,14 @@ static void R_StudioEntityLight( alight_t *lightinfo )
 		if( f > r2 ) minstrength = r2 / f;
 		else minstrength = 1.0f;
 
-		if( minstrength > 0.05f )
+		if( minstrength > ( nightfire ? 0.004f : 0.05f ))
 		{
-			if( g_studio.numlocallights >= MAX_LOCALLIGHTS )
+			if( g_studio.numlocallights >= maxlights )
 			{
 				k = -1;
-				for( int j = 0; j < g_studio.numlocallights; j++ )
+				// Find the weakest again for each candidate (retail top three).
+				if( nightfire ) dist2 = 1000000.0f;
+				for( int j = 0; j < maxlights; j++ )
 				{
 					if( lstrength[j] < dist2 && lstrength[j] < minstrength )
 					{
@@ -1326,6 +1346,7 @@ R_StudioLighting
 */
 static void R_StudioLighting( float *lv, int bone, int flags, vec3_t normal )
 {
+	const qboolean nightfire = R_StudioNightfireBasicLighting( flags );
 	if( FBitSet( flags, STUDIO_NF_FULLBRIGHT ))
 	{
 		*lv = 1.0f;
@@ -1342,6 +1363,13 @@ static void R_StudioLighting( float *lv, int bone, int flags, vec3_t normal )
 	{
 		float lightcos;
 		if( bone != -1 ) lightcos = DotProduct( normal, g_studio.blightvec[bone] );
+		else if( nightfire )
+		{
+			// The retail shader normalises after weighted bone skinning.
+			vec3_t unitnormal;
+			VectorNormalize2( normal, unitnormal );
+			lightcos = DotProduct( unitnormal, g_studio.lightvec );
+		}
 		else lightcos = DotProduct( normal, g_studio.lightvec ); // -1 colinear, 1 opposite
 		if( lightcos > 1.0f ) lightcos = 1.0f;
 
@@ -1369,7 +1397,10 @@ static void R_StudioLighting( float *lv, int bone, int flags, vec3_t normal )
 
 	illum = Q_min( illum, 255.0f );
 
-	*lv = LightToTexGamma( illum * 4 ) / 1023.0f;
+	if( nightfire )
+		*lv = illum / 255.0f;
+	else
+		*lv = LightToTexGamma( illum * 4 ) / 1023.0f;
 }
 
 /*
@@ -1431,12 +1462,53 @@ static void R_LightLambert( vec4_t light[MAX_LOCALLIGHTS], const vec3_t normal, 
 	}
 }
 
+static void R_StudioNightfirePointLighting( int vertex, int normalindex,
+	const vec3_t localnormal, const vec3_t base, byte *out )
+{
+	vec3_t normal, result;
+	if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ))
+		VectorCopy( g_studio.norms[normalindex], normal );
+	else
+	{
+		const byte *bones = (const byte *)m_pStudioHeader + m_pSubModel->norminfoindex;
+		Matrix3x4_VectorRotate( g_studio.lighttransform[bones[normalindex]], localnormal, normal );
+	}
+	VectorNormalize( normal );
+	VectorCopy( base, result );
+
+	for( int i = 0; i < g_studio.numlocallights; ++i )
+	{
+		const dlight_t *el = g_studio.locallight[i];
+		vec3_t tolight;
+		VectorSubtract( el->origin, g_studio.verts[vertex], tolight );
+		const float distance2 = DotProduct( tolight, tolight );
+		if( distance2 <= 0.0f ) continue;
+		const float facing = DotProduct( normal, tolight ) / sqrtf( distance2 );
+		if( facing <= 0.0f ) continue;
+		// Retail mdl_basic shader: attenuation (0,0,1/(100*radius),25),
+		// raw RGB/255, Lambert diffuse. Accumulate colour * factor, not + factor.
+		const float factor = facing * Q_min( 1.0f, 100.0f * el->radius / distance2 ) / 255.0f;
+		result[0] += el->color.r * factor;
+		result[1] += el->color.g * factor;
+		result[2] += el->color.b * factor;
+	}
+
+	// Retail clamps the final diffuse multiplier per channel. The 0.1
+	// minimum belongs to the view model, not ordinary world characters.
+	const float minimum = RI.currententity == tr.viewent ? 0.1f : 0.0f;
+	for( int i = 0; i < 3; ++i )
+		out[i] = bound( minimum, result[i], 1.0f ) * 255.0f;
+}
+
 static void R_StudioSetColorArray( short *ptricmds, vec3_t *pstudionorms, byte *color )
 {
 	float	*lv = (float *)g_studio.lightvalues[ptricmds[1]];
 
 	color[3] = tr.blend * 255;
-	R_LightLambert( g_studio.lightpos[ptricmds[0]], pstudionorms[ptricmds[1]], lv, color );
+	if( R_StudioNightfireBasicLighting( g_nFaceFlags ))
+		R_StudioNightfirePointLighting( ptricmds[0], ptricmds[1], pstudionorms[ptricmds[1]], lv, color );
+	else
+		R_LightLambert( g_studio.lightpos[ptricmds[0]], pstudionorms[ptricmds[1]], lv, color );
 }
 
 static void R_StudioSetColorBegin( short *ptricmds, vec3_t *pstudionorms )
