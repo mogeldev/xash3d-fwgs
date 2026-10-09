@@ -1397,7 +1397,7 @@ CreateEntitiesInRestoreList
 alloc private data for restored entities
 =============
 */
-static void CreateEntitiesInRestoreList( SAVERESTOREDATA *pSaveData, int levelMask, qboolean create_world )
+static void CreateEntitiesInRestoreList( SAVERESTOREDATA *pSaveData, int levelMask, qboolean create_world, qboolean keepPlayer )
 {
 	int		i, active;
 	ENTITYTABLE	*pTable;
@@ -1433,6 +1433,10 @@ static void CreateEntitiesInRestoreList( SAVERESTOREDATA *pSaveData, int levelMa
 
 					if( !FBitSet( pTable->flags, FENTTABLE_PLAYER ))
 						Con_Printf( S_ERROR "ENTITY IS NOT A PLAYER: %d\n", i );
+
+					// A cached Nightfire map must not replace the incoming player.
+					if( keepPlayer )
+						active = false;
 
 					// create the player
 					if( active && SV_IsValidEdict( ed ))
@@ -1626,6 +1630,7 @@ static int LoadGameState( char const *level, qboolean changelevel )
 	// must set mapname before calling into DLL
 	Q_strncpy( sv.name, level, sizeof( sv.name ));
 	svgame.globals->mapname = SV_MakeString( sv.name );
+	svgame.globals->startspot = SV_MakeString( sv.startspot );
 
 	ParseSaveTables( pSaveData, &header, true );
 	EntityPatchRead( pSaveData, level );
@@ -1645,7 +1650,7 @@ static int LoadGameState( char const *level, qboolean changelevel )
 	Cvar_SetValue( "sv_skyvec_z", header.skyVec_z );
 
 	// create entity list
-	CreateEntitiesInRestoreList( pSaveData, 0, true );
+	CreateEntitiesInRestoreList( pSaveData, 0, true, changelevel && FBitSet( world.flags, FWORLD_NIGHTFIRE ));
 
 	// now spawn entities
 	for( int i = 0; i < pSaveData->tableCount; i++ )
@@ -1828,7 +1833,7 @@ static int CreateEntityTransitionList( SAVERESTOREDATA *pSaveData, int levelMask
 	movedCount = 0;
 
 	// create entity list
-	CreateEntitiesInRestoreList( pSaveData, levelMask, false );
+	CreateEntitiesInRestoreList( pSaveData, levelMask, false, false );
 
 	// now spawn entities
 	for( int i = 0; i < pSaveData->tableCount; i++ )
@@ -1930,6 +1935,45 @@ static void LoadAdjacentEnts( const char *pOldLevel, const char *pLandmarkName )
 
 	// build the adjacent map list
 	svgame.dllFuncs.pfnParmsChangeLevel();
+
+	if( FBitSet( world.flags, FWORLD_NIGHTFIRE ) && !COM_StringEmptyOrNULL( pLandmarkName ))
+	{
+		qboolean namedSpawn = true;
+		for( i = 1; i < svgame.numEntities; i++ )
+		{
+			edict_t *pent = SV_EdictNum( i );
+			if( SV_IsValidEdict( pent ) && !Q_strcmp( SV_GetString( pent->v.classname ), "info_landmark" )
+				&& !Q_strcmp( SV_GetString( pent->v.targetname ), pLandmarkName ))
+			{
+				namedSpawn = false;
+				break;
+			}
+		}
+
+		// Retail mode 0 restores the current player/inventory at a named
+		// start, not at a translated source position or a cached player.
+		if( namedSpawn )
+		{
+			pSaveData = LoadSaveData( pOldLevel );
+			if( !pSaveData )
+				Host_Error( "Level transition ERROR\nCan't load player from %s\n", pOldLevel );
+			ParseSaveTables( pSaveData, &header, false );
+			EntityPatchRead( pSaveData, pOldLevel );
+			pSaveData->time = sv.time;
+			pSaveData->fUseLandmark = false;
+			Q_strncpy( pSaveData->szLandmarkName, pLandmarkName, sizeof( pSaveData->szLandmarkName ));
+			flags = FENTTABLE_PLAYER;
+			index = -1;
+			while(( index = EntryInTable( pSaveData, sv.name, index )) >= 0 )
+				SetBits( flags, BIT( index ));
+			movedCount = CreateEntityTransitionList( pSaveData, flags );
+			if( movedCount && !EntityPatchWrite( pSaveData, pOldLevel ))
+				Host_Error( "Level transition ERROR\nCan't write entity table for %s\n", pOldLevel );
+			SaveFinish( pSaveData );
+			svgame.globals->pSaveData = NULL;
+			return;
+		}
+	}
 
 	for( i = 0; i < currentLevelData.connectionCount; i++ )
 	{
