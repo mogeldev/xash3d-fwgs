@@ -1588,7 +1588,11 @@ static void R_StudioSetColorArray( short *ptricmds, vec3_t *pstudionorms, byte *
 	}
 
 	color[3] = tr.blend * 255;
-	if( R_StudioNightfireBasicLighting( g_nFaceFlags ))
+	if( R_StudioNightfireLighting() && FBitSet( g_nFaceFlags, STUDIO_NF_FULLBRIGHT ))
+	{
+		VectorSet( color, 255, 255, 255 );
+	}
+	else if( R_StudioNightfireBasicLighting( g_nFaceFlags ))
 		R_StudioNightfirePointLighting( ptricmds[0], ptricmds[1], pstudionorms[ptricmds[1]], lv, color );
 	else
 		R_LightLambert( g_studio.lightpos[ptricmds[0]], pstudionorms[ptricmds[1]], lv, color );
@@ -3660,15 +3664,19 @@ void R_DrawStudioModelBuiltin( cl_entity_t *e )
 {
 	cl_entity_t *oldent = RI.currententity;
 	model_t *oldmod = RI.currentmodel;
+	float oldblend = tr.blend;
 
 	RI.currententity = e;
 	RI.currentmodel = e->model;
+	// This path bypasses the entity list that normally initializes blend.
+	tr.blend = R_ModelOpaque( e->curstate.rendermode ) ? 1.0f : CL_FxBlend( e ) / 255.0f;
 
 	R_StudioSetupTimings();
 	R_StudioDrawModel( STUDIO_RENDER );
 
 	RI.currententity = oldent;
 	RI.currentmodel = oldmod;
+	tr.blend = oldblend;
 }
 
 /*

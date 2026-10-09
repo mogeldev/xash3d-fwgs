@@ -625,7 +625,8 @@ byte *NFMDL_Convert14( const void *buffer, size_t size, size_t *outsize )
 		else if( !strcmp( mat, "mdl_additive" )) flags |= STUDIO_NF_ADDITIVE;
 		else if( !strcmp( mat, "mdl_specular" )) flags |= STUDIO_NF_NFSPECULAR;
 		else if( !strcmp( mat, "mdl_basicselfillum" ) || !strncmp( mat, "mdl_cloud", 9 ) ||
-			!strncmp( mat, "mdl_sky", 7 ) || !strcmp( mat, "mdl_lightningcloud" ))
+			!strncmp( mat, "mdl_sky", 7 ) || !strcmp( mat, "mdl_lightningcloud" ) ||
+			!strcmp( mat, "mdl_terrain" ) || !strcmp( mat, "mdl_terrain_hazed" ))
 			flags |= STUDIO_NF_FULLBRIGHT;
 		else if( !strcmp( mat, "mdl_water" ))	// func_water surfaces: unlit (no light constants), seen from both sides, retail water program
 			flags |= STUDIO_NF_FULLBRIGHT | STUDIO_NF_TWOSIDE | STUDIO_NF_NFWATER;

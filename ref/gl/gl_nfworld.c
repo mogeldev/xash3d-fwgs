@@ -438,7 +438,13 @@ void R_DrawNightfireSky( void )
 
 	// painter order far to near; depth is cleared after the sky anyway
 	if( nfworld.dome )
+	{
 		R_DrawNightfireSkyLayer( nfworld.dome, RI.rvp.vieworigin, kRenderNormal, 255, NULL );
+		// The camera-centred dome is nearer than the world-space terrain.
+		// Keep its colour, but do not let its depth occlude the horizon.
+		pglDepthMask( GL_TRUE );
+		pglClear( GL_DEPTH_BUFFER_BIT );
+	}
 
 	if( nfworld.terrain.model )
 		R_DrawNightfireSkyLayer( nfworld.terrain.model, vec3_origin, kRenderTransAlpha, 255, NULL );
