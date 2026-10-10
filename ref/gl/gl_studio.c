@@ -2299,8 +2299,92 @@ R_StudioDrawPoints
 
 ===============
 */
+static qboolean R_StudioNightfireXRay( void )
+{
+	return R_StudioNightfireLighting() && RI.currententity != tr.viewent &&
+		RI.currententity->curstate.renderfx == 64;
+}
+
+static void R_StudioDrawXRayPoints( void )
+{
+	const vec3_t *vertices = (const vec3_t *)((const byte *)m_pStudioHeader + m_pSubModel->vertindex);
+	const byte *bones = (const byte *)m_pStudioHeader + m_pSubModel->vertinfoindex;
+	const mstudiomesh_t *meshes = (const mstudiomesh_t *)((const byte *)m_pStudioHeader + m_pSubModel->meshindex);
+	GLboolean depthwrite;
+	const GLboolean depthtest = pglIsEnabled( GL_DEPTH_TEST );
+	const GLboolean texture = pglIsEnabled( GL_TEXTURE_2D );
+	const GLboolean blend = pglIsEnabled( GL_BLEND );
+	const GLboolean alphatest = pglIsEnabled( GL_ALPHA_TEST );
+	const GLboolean fog = pglIsEnabled( GL_FOG );
+	GLint blendsrc, blenddst;
+	GLfloat color[4];
+	const int cull = glState.faceCull;
+
+	if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ) && m_pSubModel->blendvertinfoindex )
+	{
+		mstudioboneweight_t *weights = (mstudioboneweight_t *)((byte *)m_pStudioHeader + m_pSubModel->blendvertinfoindex);
+		matrix3x4 skin;
+		for( int i = 0; i < m_pSubModel->numverts; i++ )
+		{
+			R_StudioComputeSkinMatrix( &weights[i], skin );
+			Matrix3x4_VectorTransform( skin, vertices[i], g_studio.verts[i] );
+		}
+	}
+	else
+	{
+		for( int i = 0; i < m_pSubModel->numverts; i++ )
+			Matrix3x4_VectorTransform( g_studio.bonestransform[bones[i]], vertices[i], g_studio.verts[i] );
+	}
+
+	pglGetBooleanv( GL_DEPTH_WRITEMASK, &depthwrite );
+	pglGetIntegerv( GL_BLEND_SRC, &blendsrc );
+	pglGetIntegerv( GL_BLEND_DST, &blenddst );
+	pglGetFloatv( GL_CURRENT_COLOR, color );
+	pglDisable( GL_DEPTH_TEST );
+	pglDepthMask( GL_FALSE );
+	pglDisable( GL_TEXTURE_2D );
+	pglDisable( GL_ALPHA_TEST );
+	pglDisable( GL_FOG );
+	pglEnable( GL_BLEND );
+	pglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+	GL_Cull( GL_NONE );
+	pglColor4ub( RI.currententity->curstate.rendercolor.r,
+		RI.currententity->curstate.rendercolor.g, RI.currententity->curstate.rendercolor.b,
+		RI.currententity->curstate.renderamt );
+
+	for( int mesh = 0; mesh < m_pSubModel->nummesh; mesh++ )
+	{
+		const short *commands = (const short *)((const byte *)m_pStudioHeader + meshes[mesh].triindex);
+		int count;
+		while(( count = *commands++ ) != 0 )
+		{
+			pglBegin( count < 0 ? GL_TRIANGLE_FAN : GL_TRIANGLE_STRIP );
+			if( count < 0 ) count = -count;
+			for( int vertex = 0; vertex < count; vertex++, commands += 4 )
+				pglVertex3fv( g_studio.verts[commands[0]] );
+			pglEnd();
+		}
+		r_stats.c_studio_polys += meshes[mesh].numtris;
+	}
+
+	GL_Cull( cull );
+	pglBlendFunc( blendsrc, blenddst );
+	if( !blend ) pglDisable( GL_BLEND );
+	if( fog ) pglEnable( GL_FOG );
+	if( alphatest ) pglEnable( GL_ALPHA_TEST );
+	if( texture ) pglEnable( GL_TEXTURE_2D );
+	pglDepthMask( depthwrite );
+	if( depthtest ) pglEnable( GL_DEPTH_TEST );
+	pglColor4fv( color );
+}
+
 static void R_StudioDrawPoints( void )
 {
+	if( m_pStudioHeader && R_StudioNightfireXRay() )
+	{
+		R_StudioDrawXRayPoints();
+		return;
+	}
 	float		shellscale = 0.0f;
 	qboolean		need_sort = false;
 
@@ -3122,7 +3206,7 @@ static void R_StudioRenderFinal( void )
 
 			GL_StudioSetRenderMode( rendermode );
 			R_StudioDrawPoints();
-			GL_StudioDrawShadow();
+			if( !R_StudioNightfireXRay() ) GL_StudioDrawShadow();
 		}
 	}
 

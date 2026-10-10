@@ -74,6 +74,9 @@ typedef float GLmatrix[16];
 #define GL_CW				0x0900
 #define GL_CCW				0x0901
 #define GL_BLEND				0x0BE2
+#define GL_BLEND_SRC			0x0BE1
+#define GL_BLEND_DST			0x0BE0
+#define GL_CURRENT_COLOR			0x0B00
 #define GL_ALPHA_TEST			0x0BC0
 
 // shading model
