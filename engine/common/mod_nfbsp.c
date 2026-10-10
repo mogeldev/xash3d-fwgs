@@ -656,6 +656,16 @@ static int nfh_rec( nfh_ctx_t *ctx, nfh_plane_t *cell, int nc, nfh_frag_t *frags
 #ifndef NFW_SAMPLE_PLANES
 #define NFW_SAMPLE_PLANES 64	// ... about this many of them
 #endif
+// A non-axial split costs this many extra crossings when choosing a node
+// plane. Without it a slanted split could pass within DIST_EPSILON (1/32) of
+// a floor the player rests on; PM_RecursiveHullCheck then clamps the crossing
+// to fraction 0 and tests the neighbouring cell at the start point, reporting
+// a wall of no geometry (m1_austria02 (-816,642,4): walking east blocked).
+// The tree stays exact (leaves still use the point test); only split order
+// changes. 2 was the smallest value removing that snag (hull 1 +3% nodes).
+#ifndef NFW_AX_PENALTY
+#define NFW_AX_PENALTY 2
+#endif
 
 // Canonical (undirected) geometric plane id: +P and -P share one id so a
 // geometric plane is a single candidate (qbsp surface/onnode).
@@ -1163,6 +1173,7 @@ static int nfw_rec( nfw_ctx_t *ctx, nfh_plane_t *cell, int nc, nfw_list_t *faces
 				if( smin < -NFH_EPS && smax > NFH_EPS ) cross++;
 			}
 		}
+		cross += ax * NFW_AX_PENALTY;
 		if( cross < bestcross ||
 		    ( cross == bestcross && ( ax < bestax || ( ax == bestax && dist < bestdist ))))
 		{ bestcross = cross; bestax = ax; bestdist = dist; best = i; }
