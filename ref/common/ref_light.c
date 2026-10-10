@@ -18,6 +18,9 @@ GNU General Public License for more details.
 #include "enginefeatures.h"
 #include "pm_local.h"
 #include "common/mod_local.h"
+#include "ref_dlight.h"
+
+static qboolean R_NightfireWorld( void );
 
 CVAR_DEFINE_AUTO( r_dlight_virtual_radius, "3", FCVAR_GLCONFIG, "increase dlight radius virtually by this amount" );
 CVAR_DEFINE_AUTO( r_lighting_extended, "1", FCVAR_GLCONFIG, "allow to get lighting from world and bmodels" );
@@ -89,82 +92,6 @@ void CL_RunLightStyles( lightstyle_t *ls )
 
 /*
 =============
-R_MarkLights
-=============
-*/
-static void R_MarkLights( const dlight_t *light, int bit, const mnode_t *node, model_t *model, int dlightframecount )
-{
-	const float virtual_radius = light->radius * Q_max( 1.0f, r_dlight_virtual_radius.value );
-	const float maxdist = light->radius * light->radius;
-start:
-	if( !node || node->contents < 0 )
-		return;
-
-	float dist = PlaneDiff( light->origin, node->plane );
-
-	if( dist > virtual_radius )
-	{
-		node = node_child( node, 0, model );
-		goto start;
-	}
-
-	if( dist < -virtual_radius )
-	{
-		node = node_child( node, 1, model );
-		goto start;
-	}
-
-	const float dist_sq = dist * dist;
-
-	// mark the polygons
-	int firstsurface = node_firstsurface( node, model );
-	int numsurfaces = node_numsurfaces( node, model );
-
-	for( int i = 0; i < numsurfaces && dist_sq < maxdist; i++ )
-	{
-		vec3_t impact;
-		float s, t, l;
-		msurface_t *surf = &model->surfaces[firstsurface + i];
-		const mextrasurf_t *info = surf->info;
-
-		if( surf->plane->type < 3 )
-		{
-			VectorCopy( light->origin, impact );
-			impact[surf->plane->type] -= dist;
-		}
-		else VectorMA( light->origin, -dist, surf->plane->normal, impact );
-
-		// a1ba: the fix was taken from JoeQuake, which traces back to FitzQuake,
-		// which attributes it to LadyHavoc (Darkplaces author)
-		// clamp center of light to corner and check brightness
-		l = DotProduct( impact, info->lmvecs[0] ) + info->lmvecs[0][3] - info->lightmapmins[0];
-		s = l + 0.5;
-		s = bound( 0, s, info->lightextents[0] );
-		s = l - s;
-
-		l = DotProduct( impact, info->lmvecs[1] ) + info->lmvecs[1][3] - info->lightmapmins[1];
-		t = l + 0.5;
-		t = bound( 0, t, info->lightextents[1] );
-		t = l - t;
-
-		if( s * s + t * t + dist_sq >= maxdist )
-			continue;
-
-		if( surf->dlightframe != dlightframecount )
-		{
-			surf->dlightbits = bit;
-			surf->dlightframe = dlightframecount;
-		}
-		else surf->dlightbits |= bit;
-	}
-
-	R_MarkLights( light, bit, node_child( node, 0, model ), model, dlightframecount );
-	node = node_child( node, 1, model );
-	goto start;
-}
-
-/*
-=============
 R_PushDlights
 =============
 */
@@ -173,6 +100,8 @@ int R_PushDlights( model_t *model, int framecount )
 	if( !model )
 		return framecount;
 
+	const qboolean nightfire = R_NightfireWorld();
+
 	for( int i = 0; i < MAX_DLIGHTS; i++ )
 	{
 		const dlight_t *l = &gp_dlights[i];
@@ -180,7 +109,7 @@ int R_PushDlights( model_t *model, int framecount )
 		if( l->die < gp_cl->time || !l->radius )
 			continue;
 
-		R_MarkLights( l, 1 << i, model->nodes, model, framecount );
+		R_MarkModelLights( l, 1 << i, model, framecount, r_dlight_virtual_radius.value, nightfire, false );
 	}
 
 	return framecount;
@@ -188,6 +117,7 @@ int R_PushDlights( model_t *model, int framecount )
 
 void R_PushDlightsForBmodel( model_t *model, int framecount, const matrix4x4 object_matrix )
 {
+	const qboolean nightfire = R_NightfireWorld();
 	for( int i = 0; i < MAX_DLIGHTS; i++ )
 	{
 		dlight_t *l = &gp_dlights[i];
@@ -198,7 +128,7 @@ void R_PushDlightsForBmodel( model_t *model, int framecount, const matrix4x4 obj
 		vec3_t oldorigin = Vec3( l->origin );
 
 		Matrix4x4_VectorITransform( object_matrix, oldorigin, l->origin );
-		R_MarkLights( l, 1 << i, model->nodes + model->hulls[0].firstclipnode, model, framecount );
+		R_MarkModelLights( l, 1 << i, model, framecount, r_dlight_virtual_radius.value, nightfire, true );
 
 		VectorCopy( oldorigin, l->origin );
 	}
