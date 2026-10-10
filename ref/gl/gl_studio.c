@@ -2310,7 +2310,7 @@ static void R_StudioDrawXRayPoints( void )
 	const vec3_t *vertices = (const vec3_t *)((const byte *)m_pStudioHeader + m_pSubModel->vertindex);
 	const byte *bones = (const byte *)m_pStudioHeader + m_pSubModel->vertinfoindex;
 	const mstudiomesh_t *meshes = (const mstudiomesh_t *)((const byte *)m_pStudioHeader + m_pSubModel->meshindex);
-	GLboolean depthwrite;
+	GLint depthwrite;
 	const GLboolean depthtest = pglIsEnabled( GL_DEPTH_TEST );
 	const GLboolean texture = pglIsEnabled( GL_TEXTURE_2D );
 	const GLboolean blend = pglIsEnabled( GL_BLEND );
@@ -2336,7 +2336,7 @@ static void R_StudioDrawXRayPoints( void )
 			Matrix3x4_VectorTransform( g_studio.bonestransform[bones[i]], vertices[i], g_studio.verts[i] );
 	}
 
-	pglGetBooleanv( GL_DEPTH_WRITEMASK, &depthwrite );
+	pglGetIntegerv( GL_DEPTH_WRITEMASK, &depthwrite );
 	pglGetIntegerv( GL_BLEND_SRC, &blendsrc );
 	pglGetIntegerv( GL_BLEND_DST, &blenddst );
 	pglGetFloatv( GL_CURRENT_COLOR, color );
@@ -2373,7 +2373,7 @@ static void R_StudioDrawXRayPoints( void )
 	if( fog ) pglEnable( GL_FOG );
 	if( alphatest ) pglEnable( GL_ALPHA_TEST );
 	if( texture ) pglEnable( GL_TEXTURE_2D );
-	pglDepthMask( depthwrite );
+	pglDepthMask( depthwrite != 0 );
 	if( depthtest ) pglEnable( GL_DEPTH_TEST );
 	pglColor4fv( color );
 }
