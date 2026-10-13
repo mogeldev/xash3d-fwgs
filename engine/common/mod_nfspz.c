@@ -121,7 +121,8 @@ byte *NFSPZ_Convert2( const void *buffer, size_t size, nfspz_loadfn load, size_t
 	{
 		int ft = FRAME_SINGLE;
 		buf_i32( &out, ft );
-		int origin[2] = { 0, 0 };
+		// the frame's top-left relative to the entity: a centred sprite is drawn around its origin
+		int origin[2] = { -fw[i] / 2, fh[i] / 2 };
 		buf_bytes( &out, origin, 8 );
 		buf_i32( &out, fw[i] );
 		buf_i32( &out, fh[i] );
